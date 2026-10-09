@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sentinel-vision"
+dynamic = ["version"]
+description = "Open-source, multi-engine antimalware with real-time protection and live network monitoring"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Dylan Koldan" }]
+keywords = ["antivirus", "antimalware", "yara", "clamav", "security", "network-monitor", "edr"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+dependencies = [
+    "PySide6>=6.6",
+    "yara-python>=4.3",
+    "psutil>=5.9",
+    "watchdog>=4.0",
+    "pefile>=2023.2.7",
+    "cryptography>=42",
+    "platformdirs>=4.0",
+    "certifi>=2024.2.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-qt>=4.4", "ruff>=0.5"]
+
+[project.scripts]
+sentinel-vision-cli = "sentinel_vision.cli:main"
+
+[project.gui-scripts]
+sentinel-vision = "sentinel_vision.gui.app:main"
+
+[project.urls]
+Homepage = "https://github.com/dylanckoldan-boop/sentinel-vision"
+Issues = "https://github.com/dylanckoldan-boop/sentinel-vision/issues"
+
+[tool.hatch.version]
+path = "src/sentinel_vision/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sentinel_vision"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = [
+    "S603",  # subprocess with list args is intentional (never shell=True)
+    "S607",  # partial executable paths (netsh, iptables, freshclam) are resolved from PATH on purpose
+    "S310",  # urlopen: scheme is restricted to https in updater.download
+    "S324",  # md5/sha1 are used for signature lookups, not security
+    "S101",  # asserts
+    "E731",
+    "B008",
+    "S108",  # temp dirs are *inspected* (malware hides there), never used to create files
+    "S110",  # best-effort cleanup paths deliberately swallow errors
+    "B027",  # Engine.reload is an optional hook
+    "B905",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S"]
+"src/sentinel_vision/gui/theme.py" = ["E501"]  # Qt stylesheet
