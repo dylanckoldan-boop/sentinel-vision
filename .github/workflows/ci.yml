@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -17,8 +18,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install ruff
-      - run: ruff check src tests
-      - run: ruff format --check src tests
+      - run: ruff check src tests tools
+      - run: ruff format --check src tests tools
 
   test:
     strategy:

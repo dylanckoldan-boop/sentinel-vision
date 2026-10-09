@@ -5,8 +5,10 @@
     sentinel-vision-cli update
     sentinel-vision-cli quarantine list | restore ID [--to DIR] | delete ID
     sentinel-vision-cli net [--watch]
-    sentinel-vision-cli daemon          # real-time + network monitoring without a GUI
+    sentinel-vision-cli daemon          # real-time, behavior + network monitoring without a GUI
     sentinel-vision-cli status
+    sentinel-vision-cli autostart [on|off|status]
+    sentinel-vision-cli check-update
 
 Exit codes: 0 clean, 1 threats found, 2 error.
 """
@@ -171,9 +173,15 @@ def cmd_daemon(sv: Sentinel, _args) -> int:
         signal.signal(signal.SIGTERM, lambda *_: stop.set())
     sv.realtime.on_result = lambda r: _print_result(r)
     sv.network.add_listener(lambda c: print(_c(RED, f"[NET] {c.process} ({c.pid}) → {c.remote}: {c.threat}")))
-    sv.realtime.start(sv.settings.watch_paths)
-    sv.network.start()
+    sv.behavior.add_listener(
+        lambda e: print(_c(RED, f"[BEHAVIOR] {e.name}: {e.process or e.path} — {e.description} → {e.action}"))
+    )
+    sv.start_protection()
     print(f"{APP_NAME} daemon running. Watching: {', '.join(sv.realtime.watching) or 'nothing'}")
+    print(
+        f"  behavior monitoring: {'on' if sv.behavior.running else 'off'} · "
+        f"network monitoring: {'on' if sv.network.running else 'off'}"
+    )
     for e in sv.realtime.errors:
         print(_c(YEL, e))
     while not stop.wait(60):
@@ -181,6 +189,31 @@ def cmd_daemon(sv: Sentinel, _args) -> int:
             sv.updater.run()
             sv.after_update()
     sv.shutdown()
+    return 0
+
+
+def cmd_autostart(_sv: Sentinel, args) -> int:
+    from sentinel_vision import autostart
+
+    if args.state in ("on", "off"):
+        autostart.set_enabled(args.state == "on")
+    st = autostart.status()
+    scope = f" ({st.scope})" if st.enabled else ""
+    print(f"Start at sign-in: {'on' if st.enabled else 'off'}{scope}")
+    if st.enabled:
+        print(f"  command: {st.command}")
+    return 0
+
+
+def cmd_check_update(_sv: Sentinel, _args) -> int:
+    from sentinel_vision import app_update
+
+    info = app_update.check_latest()
+    if info is None:
+        print(f"Sentinel Vision {__version__} is the latest version.")
+        return 0
+    print(f"Sentinel Vision {info.version} is available (installed: {__version__}).")
+    print(f"  {info.page_url}")
     return 0
 
 
@@ -192,6 +225,12 @@ def cmd_status(sv: Sentinel, _args) -> int:
     print(f"  definitions updated: {time.strftime('%Y-%m-%d %H:%M', time.localtime(last)) if last else 'never'}")
     print(f"  malicious networks:  {sv.intel.count:,}")
     print(f"  quarantined items:   {len(sv.quarantine.list())}")
+    try:
+        from sentinel_vision import autostart
+
+        print(f"  start at sign-in:    {'on' if autostart.is_enabled() else 'off'}")
+    except Exception as exc:  # status must never fail because of this
+        print(f"  start at sign-in:    unknown ({exc})")
     return 0
 
 
@@ -218,12 +257,26 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--to", help="restore into this folder")
     n = sub.add_parser("net", help="show live connections")
     n.add_argument("--watch", action="store_true")
-    sub.add_parser("daemon", help="run real-time + network protection without GUI")
+    sub.add_parser("daemon", help="run real-time, behavior and network protection without GUI")
     sub.add_parser("status", help="engine status")
+    a = sub.add_parser("autostart", help="start the app automatically at sign-in")
+    a.add_argument("state", nargs="?", choices=["on", "off", "status"], default="status")
+    sub.add_parser("check-update", help="check GitHub for a newer version of Sentinel Vision")
     return p
 
 
+def _safe_console() -> None:
+    """Never crash on characters the console/pipe encoding can't show (e.g. cp1252 on Windows)."""
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _safe_console()
     args = build_parser().parse_args(argv)
     setup_logging(args.verbose)
     if args.command == "quarantine" and args.action != "list" and not args.id:
@@ -240,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
             "net": cmd_net,
             "daemon": cmd_daemon,
             "status": cmd_status,
+            "autostart": cmd_autostart,
+            "check-update": cmd_check_update,
         }[args.command]
         return handler(sv, args)
     except KeyboardInterrupt:

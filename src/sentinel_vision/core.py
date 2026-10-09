@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from logging.handlers import RotatingFileHandler
 
+from sentinel_vision.behavior import BehaviorMonitor
 from sentinel_vision.config import Settings, sub_dir
 from sentinel_vision.db import Database
 from sentinel_vision.network.monitor import NetworkMonitor
@@ -37,24 +38,48 @@ class Sentinel:
         self.network = NetworkMonitor(self.settings, self.intel, self.db)
         self.realtime = RealtimeProtection(self.scanner)
         self.updater = Updater(self.settings, self.db, self.intel)
+        self.behavior = BehaviorMonitor(self.scanner, self.settings)
+        self._engine_key = self._current_engine_key()
+        self._watch_key: tuple | None = None
 
-    def apply_settings(self) -> None:
-        """Re-read settings into running subsystems after the user changes them."""
-        self.settings.save()
-        self.scanner.build_engines()
-        if self.settings.realtime_enabled:
-            self.realtime.start(self.settings.watch_paths)
+    def _current_engine_key(self) -> tuple:
+        s = self.settings
+        return (s.hash_enabled, s.yara_enabled, s.clamav_enabled, s.heuristics_enabled, s.heuristic_threshold,
+                s.clamd_address)  # fmt: skip
+
+    def start_protection(self) -> None:
+        """Start every background protection the settings ask for (idempotent)."""
+        s = self.settings
+        watch_key = (s.realtime_enabled, tuple(s.watch_paths), tuple(s.exclusions))
+        if s.realtime_enabled:
+            if watch_key != self._watch_key or not self.realtime.running:
+                self.realtime.start(s.watch_paths)
         else:
             self.realtime.stop()
-        if self.settings.network_enabled:
+        self._watch_key = watch_key
+        if s.network_enabled:
             self.network.start()
         else:
             self.network.stop()
+        if s.behavior_enabled:
+            self.behavior.start()
+        else:
+            self.behavior.stop()
+
+    def apply_settings(self) -> None:
+        """Persist settings and re-apply them to running subsystems after the user changes them."""
+        self.settings.save()
+        key = self._current_engine_key()
+        if key != self._engine_key:  # rebuilding compiles every YARA rule, so only do it when needed
+            self.scanner.build_engines()
+            self._engine_key = key
+        self.start_protection()
 
     def after_update(self) -> None:
         self.scanner.reload_signatures()
 
     def shutdown(self) -> None:
+        self.behavior.stop()
         self.realtime.stop()
         self.network.stop()
         self.db.close()

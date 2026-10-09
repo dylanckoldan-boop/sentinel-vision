@@ -66,4 +66,6 @@ class Bridge(QObject):
 
     realtime_result = Signal(object)
     network_alert = Signal(object)
+    behavior_alert = Signal(object)
     status_changed = Signal()
+    app_update_requested = Signal()

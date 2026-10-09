@@ -155,9 +155,10 @@ class Settings:
     max_file_size_mb: int = 256
     scan_archives: bool = True
     archive_max_depth: int = 2
-    archive_max_members: int = 2000
-    archive_max_total_mb: int = 512
-    archive_max_ratio: int = 150  # compression ratio above this = treat as zip bomb
+    archive_max_members: int = 5000  # members inspected per archive (coverage limit, never a detection)
+    archive_max_total_mb: int = 512  # bytes decompressed per archive (coverage limit, never a detection)
+    archive_bomb_total_mb: int = 1024  # declared size above this AND ratio above archive_max_ratio = bomb
+    archive_max_ratio: int = 100
     scan_threads: int = max(2, min(8, (os.cpu_count() or 4)))
     exclusions: list[str] = field(default_factory=list)
 
@@ -182,7 +183,13 @@ class Settings:
     feeds: list[Feed] = field(default_factory=lambda: [Feed(**asdict(f)) for f in DEFAULT_FEEDS])
     run_freshclam: bool = True
 
-    # ui
+    # behaviour monitoring
+    behavior_enabled: bool = True
+    behavior_kill_malicious: bool = True  # end programs that signature engines confirm as malware
+    behavior_block_ransomware: bool = True  # end processes that delete shadow copies / disable recovery
+
+    # application
+    check_app_updates: bool = True
     minimize_to_tray: bool = True
 
     # ------------------------------------------------------------------ persistence
