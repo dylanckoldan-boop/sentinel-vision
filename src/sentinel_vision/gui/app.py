@@ -182,14 +182,26 @@ class MainWindow(QMainWindow):
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self._auto_update)
         self.update_timer.start(30 * 60 * 1000)
-        QTimer.singleShot(4000, self._auto_update)
+        self._first_defs_check = self._one_shot(4000, self._auto_update)
         self.app_update_timer = QTimer(self)
         self.app_update_timer.timeout.connect(self.check_app_update)
         self.app_update_timer.start(APP_UPDATE_INTERVAL_MS)
-        QTimer.singleShot(60_000, self.check_app_update)
+        self._first_app_check = self._one_shot(60_000, self.check_app_update)
 
         self.navigate("overview")
         self._update_status()
+
+    def _one_shot(self, ms: int, fn) -> QTimer:
+        """A single-shot timer owned by the window, so it can be stopped on shutdown (QTimer.singleShot can't)."""
+        t = QTimer(self)
+        t.setSingleShot(True)
+        t.timeout.connect(fn)
+        t.start(ms)
+        return t
+
+    def stop_timers(self) -> None:
+        for t in self.findChildren(QTimer):
+            t.stop()
 
     # ------------------------------------------------------------------ update banner
     def _build_banner(self) -> QFrame:
@@ -214,7 +226,7 @@ class MainWindow(QMainWindow):
         return f
 
     def check_app_update(self, manual: bool = False) -> None:
-        if not manual and not self.sentinel.settings.check_app_updates:
+        if self._quitting or (not manual and not self.sentinel.settings.check_app_updates):
             return
         task = Task(lambda _t: app_update.check_latest())
         task.signals.finished.connect(lambda info: self._on_update_checked(info, manual))
@@ -385,6 +397,8 @@ class MainWindow(QMainWindow):
         )
 
     def _auto_update(self) -> None:
+        if self._quitting:
+            return
         up = self.sentinel.updater
         if not up.due():
             return
@@ -405,8 +419,7 @@ class MainWindow(QMainWindow):
             self.notify(APP_NAME, "Still protecting you in the background. Right-click the tray icon to quit.")
             return
         self._quitting = True
-        for t in (self.timer, self.update_timer, self.app_update_timer):
-            t.stop()
+        self.stop_timers()
         self.tray.hide()
         self.sentinel.shutdown()
         e.accept()
@@ -490,7 +503,7 @@ def main() -> int:
         win.showMinimized()  # no tray on this desktop: keep a taskbar entry so the app stays reachable
     else:
         win.show()
-        QTimer.singleShot(800, win.maybe_offer_autostart)
+        win._one_shot(800, win.maybe_offer_autostart)
     return app.exec()
 
 

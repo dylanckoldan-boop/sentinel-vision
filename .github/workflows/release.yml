@@ -104,6 +104,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           function Assert($cond, $msg) { if (-not $cond) { throw "ASSERTION FAILED: $msg" } else { Write-Host "OK  $msg" } }
+          function Annotate([string]$text) {
+            # Surface diagnostics as a check-run annotation (readable without downloading logs).
+            $enc = $text.Replace('%', '%25').Replace("`r", '').Replace("`n", '%0A')
+            Write-Host "::error title=Windows installer test::$enc"
+          }
+          try {
           $setup = (Resolve-Path "out\SentinelVision-$env:VERSION-Setup.exe").Path
           $app = Join-Path $env:LOCALAPPDATA 'Programs\Sentinel Vision'
           $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
@@ -173,6 +179,17 @@ jobs:
           Assert ($null -eq (Get-Process SentinelVision -ErrorAction SilentlyContinue)) "no app process left running"
           Assert (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Sentinel Vision.lnk")) "Start menu shortcut removed"
           Write-Host "Windows installer lifecycle: ALL CHECKS PASSED"
+          Write-Host "::notice title=Windows installer test::Install, CLI, GUI, upgrade, relaunch, option change and uninstall all passed"
+          } catch {
+            $details = "$($_.Exception.Message)`n"
+            foreach ($f in @('install1.log','install2.log','install3.log','install4.log')) {
+              if (Test-Path $f) { $details += "--- $f (tail)`n" + ((Get-Content $f -Tail 15) -join "`n") + "`n" }
+            }
+            $log = Join-Path $env:LOCALAPPDATA 'SentinelVision\logs\sentinel.log'
+            if (Test-Path $log) { $details += "--- sentinel.log (tail)`n" + ((Get-Content $log -Tail 25) -join "`n") }
+            Annotate $details
+            throw
+          }
       - name: Upload installer logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -189,7 +206,7 @@ jobs:
         include:
           - os: macos-latest
             name: macos
-          - os: ubuntu-latest
+          - os: ubuntu-22.04  # oldest supported glibc (2.35) so the bundle runs on Ubuntu 22.04+ / Debian 12+
             name: linux
     runs-on: ${{ matrix.os }}
     env:
@@ -271,7 +288,7 @@ jobs:
             echo "|---|---|"
             echo "| **Windows (recommended)** | \`SentinelVision-$VERSION-Setup.exe\` |"
             echo "| Windows portable | \`SentinelVision-$VERSION-windows-portable.zip\` |"
-            echo "| macOS (Apple Silicon) | \`SentinelVision-$VERSION-macos.zip\` |"
+            echo "| macOS 14+ (Apple Silicon) | \`SentinelVision-$VERSION-macos.zip\` |"
             echo "| Linux x86-64 | \`SentinelVision-$VERSION-linux-x86_64.tar.gz\` |"
             echo
             echo "Verify downloads against \`SHA256SUMS.txt\`. Builds are not code-signed yet, so Windows SmartScreen"

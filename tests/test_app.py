@@ -80,5 +80,7 @@ def test_gui_builds_every_page(sentinel):
         win.navigate(key)
         app.processEvents()
     win._quitting = True
-    win.timer.stop()
-    win.update_timer.stop()
+    win.stop_timers()
+    win.tray.hide()
+    win.deleteLater()
+    app.processEvents()
