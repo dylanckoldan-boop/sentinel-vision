@@ -92,6 +92,7 @@ jobs:
   windows-installer-test:
     needs: [version, windows]
     runs-on: windows-latest
+    timeout-minutes: 30
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -104,6 +105,15 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           function Assert($cond, $msg) { if (-not $cond) { throw "ASSERTION FAILED: $msg" } else { Write-Host "OK  $msg" } }
+          function Invoke-Setup([string]$exe, [string[]]$arguments, [string]$label) {
+            # Start-Process -Wait would also wait for programs the installer launches (the app itself), so wait
+            # for the installer process only, with a timeout.
+            $proc = Start-Process $exe -ArgumentList $arguments -PassThru
+            $null = $proc.Handle
+            if (-not $proc.WaitForExit(300000)) { throw "$label did not finish within 5 minutes" }
+            if ($proc.ExitCode -ne 0) { throw "$label exit code $($proc.ExitCode)" }
+            Write-Host "OK  $label finished"
+          }
           function Annotate([string]$text) {
             # Surface diagnostics as a check-run annotation (readable without downloading logs).
             $enc = $text.Replace('%', '%25').Replace("`r", '').Replace("`n", '%0A')
@@ -115,8 +125,7 @@ jobs:
           $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 
           Write-Host "== silent per-user install with start-at-sign-in and PATH"
-          $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER','/TASKS="autostart,addtopath"','/LOG="install1.log"' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { Get-Content install1.log; throw "installer exit code $($p.ExitCode)" }
+          Invoke-Setup $setup @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER','/TASKS="autostart,addtopath"','/LOG="install1.log"') "first install"
           Assert (Test-Path "$app\SentinelVision.exe") "GUI executable installed"
           Assert (Test-Path "$app\sentinel-vision-cli.exe") "CLI executable installed"
           Assert (Test-Path "$app\unins000.exe") "uninstaller installed"
@@ -149,27 +158,24 @@ jobs:
           if (Test-Path $log) { Assert (-not (Select-String -Path $log -Pattern 'Traceback' -Quiet)) "no Python tracebacks in the app log" }
 
           Write-Host "== upgrade over the running app (installer must close it)"
-          $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LOG="install2.log"' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { Get-Content install2.log; throw "upgrade exit code $($p.ExitCode)" }
+          Invoke-Setup $setup @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LOG="install2.log"') "upgrade over running app"
           Start-Sleep -Seconds 3
           Assert ($null -eq (Get-Process SentinelVision -ErrorAction SilentlyContinue)) "running app was closed for the upgrade"
           Assert ((Get-ItemProperty $runKey).SentinelVision -eq "`"$app\SentinelVision.exe`" --minimized") "previous options kept on upgrade"
 
           Write-Host "== self-update style install relaunches the app"
-          $p = Start-Process $setup -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/RELAUNCH=1','/LOG="install3.log"' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { Get-Content install3.log; throw "relaunch install exit code $($p.ExitCode)" }
+          Invoke-Setup $setup @('/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/RELAUNCH=1','/LOG="install3.log"') "self-update style install"
           Start-Sleep -Seconds 15
           Assert ($null -ne (Get-Process SentinelVision -ErrorAction SilentlyContinue)) "app relaunched after /RELAUNCH=1 install"
 
           Write-Host "== unticking start-at-sign-in on upgrade removes it"
-          $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS="addtopath"','/LOG="install4.log"' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { Get-Content install4.log; throw "exit code $($p.ExitCode)" }
+          Invoke-Setup $setup @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS="addtopath"','/LOG="install4.log"') "install without start-at-sign-in"
           Assert ($null -eq (Get-ItemProperty $runKey -Name SentinelVision -ErrorAction SilentlyContinue)) "start-at-sign-in removed"
 
           Write-Host "== silent uninstall"
           & "$app\sentinel-vision-cli.exe" autostart on | Out-Host
           Assert ($null -ne (Get-ItemProperty $runKey -Name SentinelVision -ErrorAction SilentlyContinue)) "app can turn start-at-sign-in on"
-          $p = Start-Process "$app\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          Invoke-Setup "$app\unins000.exe" @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') "uninstaller"
           $deadline = (Get-Date).AddSeconds(90)
           while ((Test-Path "$app\SentinelVision.exe") -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
           Assert (-not (Test-Path "$app\SentinelVision.exe")) "program files removed"

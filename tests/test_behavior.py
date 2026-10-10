@@ -21,6 +21,8 @@ def test_ransomware_recovery_inhibition_is_critical_and_killable():
     assert evaluate_process("wmic.exe", "wmic shadowcopy delete")
     assert evaluate_process("bcdedit.exe", "bcdedit /set {default} recoveryenabled No")
     assert evaluate_process("wbadmin.exe", "wbadmin delete catalog -quiet")
+    mention = evaluate_process("notepad.exe", 'notepad "how vssadmin delete shadows works.txt"')
+    assert mention and not mention[0].terminate  # reported, but an editor is never killed
 
 
 def test_office_spawning_shell():

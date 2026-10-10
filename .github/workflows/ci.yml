@@ -45,8 +45,12 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          pytest -v -p no:cacheprovider 2>&1 | tee pytest.log
+          pytest -v -rs -p no:cacheprovider 2>&1 | tee pytest.log
       - name: Report failure details
         if: failure()
         shell: bash
         run: python tools/annotate_failure.py pytest.log "Tests on ${{ matrix.os }} / Python ${{ matrix.python }}"
+      - name: Report summary
+        if: success()
+        shell: bash
+        run: python tools/annotate_failure.py pytest.log "Tests on ${{ matrix.os }} / Python ${{ matrix.python }}" --summary

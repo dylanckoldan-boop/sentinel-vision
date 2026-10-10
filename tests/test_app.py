@@ -33,7 +33,7 @@ def test_realtime_catches_dropped_file(sentinel, workdir, eicar):
         target = workdir / "download.exe"
         target.write_bytes(eicar)
         deadline = time.time() + 15
-        while time.time() < deadline and target.exists():
+        while time.time() < deadline and (target.exists() or sentinel.realtime.threats_blocked < 1):
             time.sleep(0.2)
         assert not target.exists(), "real-time protection should quarantine the file"
         assert sentinel.realtime.threats_blocked == 1

@@ -64,6 +64,9 @@ SHELLS = {
     "msbuild.exe",
     "wmic.exe",
 }
+RECOVERY_TOOLS = {
+    "vssadmin.exe", "wmic.exe", "wbadmin.exe", "bcdedit.exe", "powershell.exe", "pwsh.exe", "cmd.exe",
+}  # fmt: skip
 SCRIPT_HOSTS = {"wscript.exe", "cscript.exe", "mshta.exe", "powershell.exe", "pwsh.exe", "cmd.exe"}
 TEMP_DIRS = tuple(
     os.path.normcase(p).rstrip("\\/")
@@ -130,7 +133,9 @@ def evaluate_process(name: str, cmdline: str, exe: str = "", parent: str = "") -
                 Severity.CRITICAL,
                 "Behavior.Ransomware.InhibitRecovery",
                 "Deletes shadow copies / backups or disables recovery — typical of ransomware",
-                True,
+                # Only end the tools that actually perform the deletion (or the shells running them); any other
+                # program that merely mentions these words is reported, never killed.
+                n in RECOVERY_TOOLS,
             )
         )
 

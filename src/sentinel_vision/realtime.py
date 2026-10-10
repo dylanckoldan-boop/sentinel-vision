@@ -95,12 +95,13 @@ class RealtimeProtection:
                 if not os.path.isfile(path):
                     continue
                 results = self.scanner.scan_file(path, origin="realtime")
-                self.files_scanned += 1
                 top = results[0]
-                if top.infected:
-                    self.threats_blocked += 1
-                    if self.on_result:
-                        self.on_result(top)
+                with self._lock:
+                    self.files_scanned += 1
+                    if top.infected:
+                        self.threats_blocked += 1
+                if top.infected and self.on_result:
+                    self.on_result(top)
             except Exception:
                 log.exception("real-time scan failed for %s", path)
 
