@@ -173,3 +173,11 @@ def test_yara_is_safe_under_concurrent_scans(eicar):
         results = list(pool.map(eng.scan, objs))
     for i, hits in enumerate(results):
         assert bool(hits) == (i % 2 == 0)
+
+
+def test_heuristics_ignore_library_names_and_tool_help_text():
+    assert _heur("Windows.Data.Pdf.dll", b"MZ" + b"\0" * 200) == []
+    help_text = b"MZ" + b"\0" * 64 + b"Example: vssadmin delete shadows /for=c: /oldest"
+    assert _heur("vssadmin.exe.mui", help_text, threshold=1) == []
+    two_tools = b"MZ" + b"\0" * 64 + b"vssadmin delete shadows /all /quiet\0wbadmin delete catalog -quiet"
+    assert _heur("payload.exe", two_tools)

@@ -180,3 +180,22 @@ def test_pattern_hits_on_signed_programs_are_report_only(sentinel, tmp_path):
     res2 = sentinel.scanner.scan_file(copy, act=False, use_cache=False)[0]
     hit2 = next(d for d in res2.detections if d.name == "Test_Any_PE")
     assert hit2.severity == Severity.HIGH and sentinel.scanner.should_quarantine(res2) is True
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="catalog signatures are Windows-only")
+def test_catalog_signed_system_files_verify_as_valid():
+    import pefile
+
+    system32 = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32")
+    checked = []
+    for name in ("kernel32.dll", "ntdll.dll", "user32.dll", "cmd.exe", "notepad.exe", "ws2_32.dll", "shell32.dll"):
+        path = os.path.join(system32, name)
+        if not os.path.exists(path):
+            continue
+        pe = pefile.PE(path, fast_load=True)
+        embedded = pe.OPTIONAL_HEADER.DATA_DIRECTORY[4].Size > 0
+        pe.close()
+        if not embedded:
+            checked.append(name)
+            assert verify(path) is Signature.VALID, f"{name} should verify through its catalog"
+    assert checked, "expected at least one catalog-signed system file"

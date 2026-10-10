@@ -55,6 +55,11 @@ EXEC_EXT = {
     "sh",
     "apk",
 }
+# what a victim can double-click (libraries such as "Windows.Data.Pdf.dll" are not)
+LAUNCHABLE_EXT = {
+    "exe", "scr", "com", "pif", "cpl", "msi", "bat", "cmd", "ps1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "hta",
+    "lnk", "jar", "sh", "app", "apk",
+}  # fmt: skip
 DECOY_EXT = {
     "pdf",
     "doc",
@@ -203,7 +208,7 @@ class HeuristicEngine(Engine):
             out.append(Indicator(70, "Masquerade", "Right-to-left override character hides the real extension"))
         is_exe = head[:2] == b"MZ" or head[:4] == b"\x7fELF"
         parts = lname.split(".")
-        if len(parts) >= 3 and parts[-1] in EXEC_EXT and parts[-2] in DECOY_EXT:
+        if len(parts) >= 3 and parts[-1] in LAUNCHABLE_EXT and parts[-2] in DECOY_EXT:
             # A document-looking name that is really a program is a classic phishing trick.
             weight = (
                 60 if (is_exe or parts[-1] in SCRIPT_EXT or parts[-1] in {"scr", "pif", "com", "lnk", "hta"}) else 40
@@ -438,8 +443,12 @@ class HeuristicEngine(Engine):
             b"bcdedit /set {default} bootstatuspolicy ignoreallfailures",
         ]
         hits = [r for r in ransom if r in blob]
-        if hits:
-            out.append(Indicator(50 if len(hits) == 1 else 70, "Ransomware", "Deletes backups / shadow copies"))
+        families = {h.split()[0].split(b".")[0] for h in hits}  # vssadmin / wmic / wbadmin / bcdedit
+        if len(families) >= 2:
+            out.append(Indicator(70, "Ransomware", "Deletes backups with several different tools"))
+        elif hits and head[:2] != b"MZ":
+            # a single tool's command inside a script; the Windows tools' own help text contains it too
+            out.append(Indicator(50, "Ransomware", "Deletes backups / shadow copies"))
         if b"stratum+tcp://" in blob or b"stratum+ssl://" in blob or b"xmrig" in blob:
             out.append(Indicator(55, "CoinMiner", "Cryptocurrency mining pool / miner"))
         if b"your files have been encrypted" in blob or b"files are encrypted" in blob and b"bitcoin" in blob:
