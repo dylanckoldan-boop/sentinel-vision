@@ -172,7 +172,7 @@ class MainWindow(QMainWindow):
         self.bridge.realtime_result.connect(self._on_realtime)
         self.bridge.network_alert.connect(self._on_network_alert)
         self.bridge.behavior_alert.connect(self._on_behavior_alert)
-        self.bridge.status_changed.connect(self._update_status)
+        self.bridge.status_changed.connect(self.refresh_now)
         self.bridge.app_update_requested.connect(lambda: self.check_app_update(manual=True))
 
         self.timer = QTimer(self)
@@ -315,6 +315,16 @@ class MainWindow(QMainWindow):
             page.refresh()
         if self._ticks % 10 == 0:
             self._update_status()
+
+    def refresh_now(self) -> None:
+        """Re-evaluate status everywhere immediately (e.g. right after protection started)."""
+        dash = self.pages.get("overview")
+        if dash is not None and hasattr(dash, "_last_slow"):
+            dash._last_slow = 0.0
+        self._update_status()
+        current = self.stack.currentWidget()
+        if current is not None:
+            current.refresh()
 
     def _update_status(self) -> None:
         s = self.sentinel
@@ -495,7 +505,7 @@ def main() -> int:
         server.newConnection.connect(lambda: (server.nextPendingConnection(), win.show_normal()))
 
     sentinel.start_protection()
-    win._update_status()
+    win.refresh_now()
 
     if minimized and QSystemTrayIcon.isSystemTrayAvailable():
         pass  # started at sign-in: stay in the tray
