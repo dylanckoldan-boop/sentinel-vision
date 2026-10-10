@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import math
 import re
+import sys
 import time
 import zipfile
 from collections import Counter
@@ -242,7 +243,10 @@ class HeuristicEngine(Engine):
             out.append(Indicator(15, "Malformed", "PE structure could not be fully analysed"))
         finally:
             pe.close()  # release the file mapping (on Windows an open mapping locks the file)
-        if has_signature and obj.fs_path is not None:
+        suspicious = sum(i.weight for i in out) > 0
+        # Embedded signatures are checked always (a broken one is itself suspicious); on Windows, files without one
+        # are checked against the system catalogs when there is something to weigh against.
+        if obj.fs_path is not None and (has_signature or (sys.platform == "win32" and suspicious)):
             sig = authenticode.verify(str(obj.fs_path))
             if sig is Signature.TAMPERED:
                 out.append(
@@ -250,7 +254,7 @@ class HeuristicEngine(Engine):
                 )
             elif sig is Signature.VALID and sum(i.weight for i in out) > 0:
                 out.append(Indicator(-60, "Signed", "Valid Authenticode signature from a trusted publisher"))
-            elif sig is Signature.UNAVAILABLE and out:
+            elif sig is Signature.UNAVAILABLE and has_signature and out:
                 out.append(Indicator(-10, "Signed", "Carries an Authenticode signature (verified only on Windows)"))
         return out
 

@@ -3,6 +3,30 @@
 All notable changes to Sentinel Vision are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-10-09
+
+### Fixed
+- **False positives on Windows system files**, found by the new weekly audit of 20,000 clean files per platform:
+  the bundled AMSI-bypass, Defender-tampering, backup-deletion and PowerShell-download rules matched legitimate
+  Windows components (for example `amsi.dll`, Windows Security and Defender files, and `vssadmin` help text). The rules
+  now match the attack technique itself — typically in scripts — and never the Windows tools that merely contain the
+  same API or command names.
+- Heuristics no longer flag library names such as `Windows.Data.Pdf.dll` as a "double extension", or Windows tools'
+  own help text as ransomware.
+
+### Added
+- **Catalog-signature verification**: most Windows system files are signed through Microsoft catalogs rather than an
+  embedded signature; they are now recognised as validly signed too.
+- Pattern (YARA) matches on programs with a valid publisher signature are reported but not quarantined
+  automatically, and are ignored on validly signed operating-system components. Exact matches (hash / ClamAV) are
+  unaffected.
+- Heuristics take catalog signatures into account, so signed Windows components no longer raise heuristic alerts.
+- Operating-system files (`C:\Windows`, `/System`, `/usr/bin`, …) are only removed automatically on an exact
+  hash or ClamAV match; other findings there are reported for review.
+
+### Changed
+- GitHub Actions updated to their Node 24 versions; the false-positive audit reports its results as annotations.
+
 ## [0.2.0] - 2026-10-09
 
 ### Added
@@ -54,5 +78,6 @@ Source-only release (no downloadable builds).
 - First release: hash, YARA, ClamAV and heuristic engines; real-time protection; encrypted quarantine; live traffic
   monitor with threat intelligence; threat-feed updater; PySide6 GUI; CLI and daemon; CI on Windows, macOS and Linux.
 
+[0.2.1]: https://github.com/dylanckoldan-boop/sentinel-vision/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/dylanckoldan-boop/sentinel-vision/releases/tag/v0.2.0
 [0.1.0]: https://github.com/dylanckoldan-boop/sentinel-vision/commit/d633c7e

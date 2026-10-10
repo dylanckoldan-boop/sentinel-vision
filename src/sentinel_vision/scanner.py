@@ -340,6 +340,12 @@ class Scanner:
             return
         if authenticode.verify(str(obj.fs_path)) is not Signature.VALID:
             return
+        if is_system_path(res.path):
+            # A validly signed operating-system component: broad community rules matching it are noise.
+            for d in pattern_hits:
+                log.info("ignoring %s on signed system file %s", d.name, res.path)
+            res.detections = [d for d in res.detections if d not in pattern_hits]
+            return
         for d in pattern_hits:
             d.severity = Severity.MEDIUM
             d.description += " (file has a valid publisher signature — reported, not quarantined)"
