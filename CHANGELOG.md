@@ -1,0 +1,58 @@
+# Changelog
+
+All notable changes to Sentinel Vision are listed here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
+
+## [0.2.0] - 2026-10-09
+
+### Added
+- **Windows installer** (`SentinelVision-<version>-Setup.exe`): per-user install without administrator rights (or
+  all-users), Start-menu shortcut, optional desktop icon, optional `sentinel-vision-cli` on PATH, clean upgrades that
+  keep your settings, and a full uninstaller (asks before deleting your data). A portable zip is published too.
+- **Start at sign-in** on Windows, macOS and Linux. The app starts hidden in the system tray. Turn it on or off in the
+  installer, on the *Protection* page, from the tray menu, or with `sentinel-vision-cli autostart on|off`.
+  A first-run prompt offers it when you did not use the installer.
+- **Behavior monitoring**
+  - Every new program is checked against attack-technique rules: Office documents launching shells, hidden or
+    download-and-run PowerShell, shadow-copy/backup deletion (ransomware), certutil/mshta/regsvr32/rundll32 abuse,
+    reverse shells, crypto-miners and payloads started from temp folders.
+  - Every newly started program's executable is scanned. Programs confirmed as malware by a signature engine are
+    ended and quarantined, and ransomware attempts to delete backups are stopped (both switchable).
+  - Auto-start locations (Run keys, Startup folders, scheduled tasks, LaunchAgents/Daemons, XDG autostart, systemd,
+    cron, shell profiles, SSH authorized_keys) are watched; new entries are reported and their targets scanned,
+    including changes made while the app was closed.
+- **App self-update**: the app checks GitHub Releases. On Windows it downloads the new installer, verifies its
+  SHA-256 against the release's `SHA256SUMS.txt`, upgrades in place and restarts. Elsewhere it links to the release.
+- **Authenticode verification** (Windows): validly signed programs no longer trip heuristic warnings, and programs
+  whose signature was broken by modification are flagged.
+- The installed app now includes the **command-line tool** (`sentinel-vision-cli.exe`).
+- New CLI commands: `autostart`, `check-update`; `daemon` now includes behavior monitoring.
+- macOS: in-app guidance for granting Full Disk Access.
+- **False-positive audit** tool (`tools/fp_audit.py`) and a weekly workflow that scans thousands of clean system files on
+  Windows, macOS and Linux with every engine.
+- Release pipeline that installs, upgrades, relaunches and uninstalls the Windows installer on a clean machine, and
+  smoke-tests the macOS and Linux builds, before anything is published.
+- Optional Windows code signing in the release workflow (see `docs/CODE_SIGNING.md`).
+- App icon, Windows version information, issue/PR templates, Dependabot, roadmap and installation guide.
+
+### Changed
+- Archives with many entries or lots of data (jar files, icon packs, datasets) are scanned up to the coverage limits
+  instead of being reported as "Archive.Bomb". Only real decompression bombs (more than 1 GB packed at over 100:1)
+  are flagged.
+- Changing settings no longer recompiles every YARA rule unless an engine setting changed.
+
+### Fixed
+- PE files are always closed after analysis (an open file mapping could lock the file on Windows).
+- The command-line tool can no longer crash when the console cannot display a character.
+- Checking for updates before any release exists no longer reports an error.
+
+## [0.1.0] - 2026-10-09
+
+Source-only release (no downloadable builds).
+
+### Added
+- First release: hash, YARA, ClamAV and heuristic engines; real-time protection; encrypted quarantine; live traffic
+  monitor with threat intelligence; threat-feed updater; PySide6 GUI; CLI and daemon; CI on Windows, macOS and Linux.
+
+[0.2.0]: https://github.com/dylanckoldan-boop/sentinel-vision/releases/tag/v0.2.0
+[0.1.0]: https://github.com/dylanckoldan-boop/sentinel-vision/commit/d633c7e

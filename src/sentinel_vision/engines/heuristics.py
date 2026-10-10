@@ -15,6 +15,8 @@ import zipfile
 from collections import Counter
 from dataclasses import dataclass
 
+from sentinel_vision.engines import authenticode
+from sentinel_vision.engines.authenticode import Signature
 from sentinel_vision.engines.base import Detection, Engine, ScanObject, Severity
 
 try:
@@ -226,6 +228,29 @@ class HeuristicEngine(Engine):
             if b"PE\x00\x00" in obj.head[:4096]:
                 out.append(Indicator(20, "Malformed", "Malformed PE structure"))
             return out
+        has_signature = False
+        try:
+            out += self._pe_body(pe, obj)
+            sec = pe.OPTIONAL_HEADER.DATA_DIRECTORY[4] if len(pe.OPTIONAL_HEADER.DATA_DIRECTORY) > 4 else None
+            has_signature = sec is not None and sec.Size > 0
+        except Exception:
+            out.append(Indicator(15, "Malformed", "PE structure could not be fully analysed"))
+        finally:
+            pe.close()  # release the file mapping (on Windows an open mapping locks the file)
+        if has_signature and obj.fs_path is not None:
+            sig = authenticode.verify(str(obj.fs_path))
+            if sig is Signature.TAMPERED:
+                out.append(
+                    Indicator(40, "Tampered", "Authenticode signature is broken: file was modified after signing")
+                )
+            elif sig is Signature.VALID and sum(i.weight for i in out) > 0:
+                out.append(Indicator(-60, "Signed", "Valid Authenticode signature from a trusted publisher"))
+            elif sig is Signature.UNAVAILABLE and out:
+                out.append(Indicator(-10, "Signed", "Carries an Authenticode signature (verified only on Windows)"))
+        return out
+
+    def _pe_body(self, pe, obj: ScanObject) -> list[Indicator]:
+        out: list[Indicator] = []
         try:
             pe.parse_data_directories(
                 directories=[
@@ -312,10 +337,6 @@ class HeuristicEngine(Engine):
         if ts > time.time() + 86400 * 30:
             out.append(Indicator(10, "Malformed", "Compile timestamp is in the future"))
 
-        sec_dir = pe.OPTIONAL_HEADER.DATA_DIRECTORY[4] if len(pe.OPTIONAL_HEADER.DATA_DIRECTORY) > 4 else None
-        if sec_dir is not None and sec_dir.Size > 0 and out:
-            out.append(Indicator(-15, "Signed", "Carries an Authenticode signature (not verified)"))
-        pe.close()
         return out
 
     def _decode(self, head: bytes) -> str:

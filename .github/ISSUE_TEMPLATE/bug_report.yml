@@ -1,0 +1,52 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! **Security vulnerabilities** must not be filed here — use *Security → Report a vulnerability* instead.
+  - type: input
+    id: version
+    attributes:
+      label: Sentinel Vision version
+      description: Shown at the bottom of the sidebar, or run `sentinel-vision-cli --version`.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - Windows installer
+        - Windows portable zip
+        - macOS app
+        - Linux bundle
+        - From source (pip)
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and version
+      placeholder: "Windows 11 23H2 / macOS 15.1 / Ubuntu 24.04"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. Open …\n2. Click …\n3. See …"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log excerpt
+      description: The last lines of `logs/sentinel.log` in the data folder (see docs/INSTALL.md → Uninstalling for the location). Remove anything private.
+      render: text

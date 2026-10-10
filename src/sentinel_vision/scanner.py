@@ -210,11 +210,16 @@ class Scanner:
             fh = obj.open()
             try:
                 zf = zipfile.ZipFile(fh)
-            except (zipfile.BadZipFile, OSError):
+            except (zipfile.BadZipFile, OSError, ValueError):
                 fh.close()
                 return
-            infos = [i for i in zf.infolist() if not i.is_dir()]
-            self._check_limits(infos, obj.size, lambda i: i.file_size, lambda i: i.compress_size)
+            closer = lambda: (zf.close(), fh.close())  # noqa: E731
+            try:
+                infos = [i for i in zf.infolist() if not i.is_dir()]
+                self._check_bomb(sum(i.file_size for i in infos), sum(i.compress_size for i in infos))
+            except BaseException:
+                closer()
+                raise
 
             def zip_members():
                 for info in infos:
@@ -223,16 +228,28 @@ class Scanner:
                     yield info.filename, info.file_size, (lambda i=info: zf.read(i))
 
             members = zip_members()
-            closer = lambda: (zf.close(), fh.close())  # noqa: E731
         elif self._looks_like_tar(head):
             fh = obj.open()
             try:
                 tf = tarfile.open(fileobj=fh, mode="r:*")
-            except (tarfile.TarError, OSError, EOFError):
+            except (tarfile.TarError, OSError, EOFError, ValueError):
                 fh.close()
                 return
-            infos = [m for m in tf.getmembers() if m.isfile()]
-            self._check_limits(infos, obj.size, lambda m: m.size, None)
+            closer = lambda: (tf.close(), fh.close())  # noqa: E731
+            try:
+                infos = []
+                for m in tf:  # stop listing early instead of walking a huge archive
+                    if m.isfile():
+                        infos.append(m)
+                    if len(infos) >= s.archive_max_members:
+                        break
+                self._check_bomb(sum(m.size for m in infos), obj.size)
+            except (tarfile.TarError, OSError, EOFError, ValueError):
+                closer()
+                return
+            except BaseException:
+                closer()
+                raise
 
             def tar_members():
                 for m in infos:
@@ -241,14 +258,19 @@ class Scanner:
                         yield m.name, m.size, (lambda f=f, n=m.size: f.read(n))
 
             members = tar_members()
-            closer = lambda: (tf.close(), fh.close())  # noqa: E731
         else:
             return
+        budget = s.archive_max_total_mb * 1024 * 1024
         try:
-            for name, size, read in members:
-                if size > s.max_file_size_mb * 1024 * 1024:
+            for count, (name, size, read) in enumerate(members):
+                # Very large archives (jars, icon packs, datasets) are scanned up to the limits; that is a
+                # coverage limit, not a sign of malice, so it is never reported as a detection.
+                if count >= s.archive_max_members or budget <= 0:
+                    break
+                if size > s.max_file_size_mb * 1024 * 1024 or size > budget:
                     continue
                 data = read()
+                budget -= len(data)
                 display = f"{obj.display_path}!{name}"
                 member = ScanObject(display, data=data)
                 r = ScanResult(path=display, sha256=member.sha256, size=member.size, origin=origin)
@@ -264,20 +286,14 @@ class Scanner:
     def _looks_like_tar(head: bytes) -> bool:
         return head[:2] == b"\x1f\x8b" or head[:3] == b"BZh" or head[:6] == b"\xfd7zXZ\x00" or head[257:262] == b"ustar"
 
-    def _check_limits(self, infos: list, archive_size: int, size_of, csize_of) -> None:
+    def _check_bomb(self, uncompressed: int, compressed: int) -> None:
+        """Decompression bombs: an enormous declared size squeezed into a tiny archive."""
         s = self.settings
-        if len(infos) > s.archive_max_members:
-            raise ArchiveLimitError(f"{len(infos)} members")
-        total = sum(size_of(i) for i in infos)
-        if total > s.archive_max_total_mb * 1024 * 1024:
-            raise ArchiveLimitError(f"{total // (1024 * 1024)} MB uncompressed")
-        if csize_of is not None:
-            for i in infos:
-                c = max(1, csize_of(i))
-                if size_of(i) > 1024 * 1024 and size_of(i) / c > s.archive_max_ratio:
-                    raise ArchiveLimitError(f"compression ratio {size_of(i) // c}:1")
-        elif archive_size and total / max(1, archive_size) > s.archive_max_ratio and total > 64 * 1024 * 1024:
-            raise ArchiveLimitError(f"compression ratio {total // archive_size}:1")
+        ratio = uncompressed / max(1, compressed)
+        if uncompressed > s.archive_bomb_total_mb * 1024 * 1024 and ratio > s.archive_max_ratio:
+            raise ArchiveLimitError(
+                f"{uncompressed // (1024 * 1024):,} MB packed into {max(1, compressed // 1024):,} KB ({ratio:,.0f}:1)"
+            )
 
     # ------------------------------------------------------------------ actions
     def should_quarantine(self, res: ScanResult) -> bool:

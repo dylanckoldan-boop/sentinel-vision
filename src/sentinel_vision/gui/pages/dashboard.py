@@ -5,6 +5,7 @@ import time
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
+from sentinel_vision import autostart
 from sentinel_vision.gui import theme
 from sentinel_vision.gui.pages.base import Page, ago, fmt_ts
 from sentinel_vision.gui.widgets import StatCard, StatusHero, ThroughputGraph, card, label
@@ -104,7 +105,15 @@ class DashboardPage(Page):
             )
         if time.time() - last > 7 * 86400:
             return "warn", "Definitions are out of date", f"Last update: {ago(last)}. Click “Update definitions”."
-        return "ok", "You're protected", f"Real-time protection on · definitions updated {ago(last)}"
+        if not s.settings.behavior_enabled or not s.behavior.running:
+            return "warn", "Behavior monitoring is off", "New programs and auto-start changes are not being checked."
+        if not autostart.is_enabled():
+            return (
+                "warn",
+                "Protection won't start after a restart",
+                "Turn on “Start at sign-in” in Protection (or from the tray icon).",
+            )
+        return "ok", "You're protected", f"Real-time and behavior protection on · definitions updated {ago(last)}"
 
     def refresh(self) -> None:
         s = self.s

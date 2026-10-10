@@ -1,46 +1,94 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QCheckBox, QFileDialog, QHBoxLayout, QListWidget, QPushButton
+import sys
 
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import QCheckBox, QFileDialog, QHBoxLayout, QListWidget, QMessageBox, QPushButton, QVBoxLayout
+
+from sentinel_vision import autostart
 from sentinel_vision.gui import theme
 from sentinel_vision.gui.pages.base import Page, fmt_ts, make_table, severity_color
 from sentinel_vision.gui.widgets import RowTableModel, StatCard, card, label
 
+BIG = "font-size: 14px; font-weight: 600;"
+MAC_FDA_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+
 
 class ProtectionPage(Page):
-    title = "Real-time protection"
+    title = "Protection"
     subtitle = (
-        "Files are scanned as soon as they are created, downloaded, modified or moved into a protected folder. "
-        "Known malware is quarantined before you can open it."
+        "Files are scanned the moment they are created, downloaded, changed or moved into a protected folder; "
+        "new programs and auto-start entries are checked as they appear. Known malware is quarantined."
     )
 
     def __init__(self, ctx) -> None:
         super().__init__(ctx)
         top = QHBoxLayout()
+        top.setSpacing(12)
+
         sw_card, sl = card()
+        cols = QHBoxLayout()
+        left, right = QVBoxLayout(), QVBoxLayout()
+        left.setSpacing(6)
+        right.setSpacing(6)
         self.toggle = QCheckBox("Real-time file protection")
-        self.toggle.setStyleSheet("font-size: 15px; font-weight: 600;")
+        self.behavior_toggle = QCheckBox("Behavior monitoring")
+        self.net_toggle = QCheckBox("Live network monitoring")
+        self.login_toggle = QCheckBox("Start at sign-in")
+        for w in (self.toggle, self.behavior_toggle, self.net_toggle, self.login_toggle):
+            w.setStyleSheet(BIG)
         self.state = label("", "muted")
         self.state.setTextFormat(Qt.RichText)
-        sl.addWidget(self.toggle)
-        sl.addWidget(self.state)
-        self.net_toggle = QCheckBox("Live network monitoring")
-        self.net_toggle.setStyleSheet("font-size: 15px; font-weight: 600;")
-        sl.addWidget(self.net_toggle)
+        self.login_state = label("", "muted")
+        self.login_state.setWordWrap(True)
+        left.addWidget(self.toggle)
+        left.addWidget(self.state)
+        left.addWidget(self.behavior_toggle)
+        left.addWidget(self.net_toggle)
         self.auto_q = QCheckBox("Quarantine signature detections automatically")
-        sl.addWidget(self.auto_q)
-        top.addWidget(sw_card, 2)
+        self.kill_mal = QCheckBox("End programs confirmed as malware")
+        self.kill_ransom = QCheckBox("Stop ransomware from deleting backups")
+        right.addWidget(self.login_toggle)
+        right.addWidget(self.login_state)
+        right.addWidget(self.auto_q)
+        right.addWidget(self.kill_mal)
+        right.addWidget(self.kill_ransom)
+        cols.addLayout(left, 1)
+        cols.addLayout(right, 1)
+        sl.addLayout(cols)
+        top.addWidget(sw_card, 1)
+        self.root.addLayout(top)
+
+        stats = QHBoxLayout()
+        stats.setSpacing(12)
         self.c_scanned = StatCard("Files checked")
         self.c_blocked = StatCard("Threats stopped")
-        top.addWidget(self.c_scanned, 1)
-        top.addWidget(self.c_blocked, 1)
-        self.root.addLayout(top)
+        self.c_procs = StatCard("Programs checked")
+        for c in (self.c_scanned, self.c_blocked, self.c_procs):
+            stats.addWidget(c)
+        self.root.addLayout(stats)
+
+        if sys.platform == "darwin":
+            mac, ml = card()
+            ml.addWidget(label("macOS needs your permission", "h2"))
+            ml.addWidget(
+                label(
+                    "To scan Downloads, Desktop, Documents, Mail and other protected folders, add Sentinel Vision in "
+                    "System Settings → Privacy & Security → Full Disk Access, then restart the app.",
+                    "muted",
+                    wrap=True,
+                )
+            )
+            b = QPushButton("Open Full Disk Access settings")
+            b.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(MAC_FDA_URL)))
+            ml.addWidget(b, 0, Qt.AlignLeft)
+            self.root.addWidget(mac)
 
         f_card, fl = card()
         fl.addWidget(label("Protected folders", "h2"))
         self.folders = QListWidget()
-        self.folders.setMaximumHeight(170)
+        self.folders.setMaximumHeight(96)
         fl.addWidget(self.folders)
         row = QHBoxLayout()
         self.b_add = QPushButton("Add folder…")
@@ -54,65 +102,88 @@ class ProtectionPage(Page):
         fl.addWidget(self.errors)
         self.root.addWidget(f_card)
 
-        self.root.addWidget(label("Recent real-time detections", "h2"))
+        self.root.addWidget(label("Recent real-time and behavior detections", "h2"))
         self.model = RowTableModel(
-            ["When", "Threat", "Engine", "File", "Action"], color_for=lambda d: severity_color(d.severity)
+            ["When", "Threat", "Source", "File / program", "Action"], color_for=lambda d: severity_color(d.severity)
         )
         self.table = make_table(self.model, stretch_col=3)
         self.table.setColumnWidth(0, 150)
-        self.table.setColumnWidth(1, 240)
+        self.table.setColumnWidth(1, 260)
+        self.table.setColumnWidth(2, 90)
         self.root.addWidget(self.table, 1)
 
-        self.toggle.toggled.connect(self._toggle_rt)
-        self.net_toggle.toggled.connect(self._toggle_net)
-        self.auto_q.toggled.connect(self._toggle_aq)
+        self.toggle.toggled.connect(lambda on: self._set("realtime_enabled", on, apply=True))
+        self.behavior_toggle.toggled.connect(lambda on: self._set("behavior_enabled", on, apply=True))
+        self.net_toggle.toggled.connect(lambda on: self._set("network_enabled", on, apply=True))
+        self.auto_q.toggled.connect(lambda on: self._set("auto_quarantine", on))
+        self.kill_mal.toggled.connect(lambda on: self._set("behavior_kill_malicious", on))
+        self.kill_ransom.toggled.connect(lambda on: self._set("behavior_block_ransomware", on))
+        self.login_toggle.toggled.connect(self._toggle_login)
         self.b_add.clicked.connect(self._add)
         self.b_rm.clicked.connect(self._remove)
         self._sync()
 
+    # ------------------------------------------------------------------ state
     def _sync(self) -> None:
         st = self.s.settings
-        for w, v in (
+        pairs = (
             (self.toggle, st.realtime_enabled),
+            (self.behavior_toggle, st.behavior_enabled),
             (self.net_toggle, st.network_enabled),
             (self.auto_q, st.auto_quarantine),
-        ):
+            (self.kill_mal, st.behavior_kill_malicious),
+            (self.kill_ransom, st.behavior_block_ransomware),
+        )
+        for w, v in pairs:
             w.blockSignals(True)
             w.setChecked(v)
             w.blockSignals(False)
+        self._sync_login()
         self.folders.clear()
         self.folders.addItems(st.watch_paths)
 
-    def _apply(self) -> None:
-        self.s.apply_settings()
-        self.ctx.bridge.status_changed.emit()
+    def _sync_login(self) -> None:
+        stt = autostart.status()
+        self.login_toggle.blockSignals(True)
+        self.login_toggle.setChecked(stt.enabled)
+        self.login_toggle.blockSignals(False)
+        if stt.enabled:
+            scope = " for all users" if stt.scope == "all users" else ""
+            self.login_state.setText(f"Starts hidden in the tray when you sign in{scope}.")
+        else:
+            self.login_state.setText("Off — protection stops whenever the app is not running.")
+
+    def _set(self, key: str, value: bool, apply: bool = False) -> None:
+        setattr(self.s.settings, key, value)
+        if apply:
+            self.s.apply_settings()
+            self.ctx.bridge.status_changed.emit()
+        else:
+            self.s.settings.save()
         self.refresh()
 
-    def _toggle_rt(self, on: bool) -> None:
-        self.s.settings.realtime_enabled = on
-        self._apply()
-
-    def _toggle_net(self, on: bool) -> None:
-        self.s.settings.network_enabled = on
-        self._apply()
-
-    def _toggle_aq(self, on: bool) -> None:
-        self.s.settings.auto_quarantine = on
-        self.s.settings.save()
+    def _toggle_login(self, on: bool) -> None:
+        try:
+            autostart.set_enabled(on)
+        except autostart.AutostartError as exc:
+            QMessageBox.warning(self, "Start at sign-in", str(exc))
+        self._sync_login()
 
     def _add(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Protect folder")
         if d and d not in self.s.settings.watch_paths:
             self.s.settings.watch_paths.append(d)
             self._sync()
-            self._apply()
+            self.s.apply_settings()
+            self.refresh()
 
     def _remove(self) -> None:
         for item in self.folders.selectedItems():
             if item.text() in self.s.settings.watch_paths:
                 self.s.settings.watch_paths.remove(item.text())
         self._sync()
-        self._apply()
+        self.s.apply_settings()
+        self.refresh()
 
     def refresh(self) -> None:
         rt = self.s.realtime
@@ -126,7 +197,11 @@ class ProtectionPage(Page):
             )
         )
         self.c_scanned.set(f"{rt.files_scanned:,}", "this session")
-        self.c_blocked.set(str(rt.threats_blocked), "this session", theme.DANGER if rt.threats_blocked else theme.OK)
+        dets = self.s.db.recent_detections(400)
+        rows = [d for d in dets if d.origin in ("realtime", "behavior")][:150]
+        stopped = rt.threats_blocked + sum(1 for e in self.s.behavior.events if e.action.startswith("terminated"))
+        self.c_blocked.set(str(stopped), "this session", theme.DANGER if stopped else theme.OK)
+        self.c_procs.set(f"{self.s.behavior.processes_checked:,}", "this session")
         self.errors.setText("\n".join(rt.errors))
-        rows = [d for d in self.s.db.recent_detections(300) if d.origin == "realtime"][:100]
-        self.model.set_rows([(fmt_ts(d.ts), d.name, d.engine, d.path, d.action) for d in rows], rows)
+        self.model.set_rows([(fmt_ts(d.ts), d.name, d.origin, d.path, d.action) for d in rows], rows)
+        self._sync_login()

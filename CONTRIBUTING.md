@@ -30,13 +30,31 @@ Set `SENTINEL_VISION_HOME=/some/tmp/dir` while developing so you don't touch you
 * **Threat feeds** — add a `Feed` to `config.DEFAULT_FEEDS` with a parser in `network/threatintel.py`. Feeds must be HTTPS and free to use.
 * **Translations / accessibility** for the GUI.
 
-## Bigger projects we'd love help with
+## Bigger projects
 
-* On-access blocking via OS APIs: Linux `fanotify` (permission events), macOS Endpoint Security, Windows minifilter/AMSI provider
-* Behavioural monitoring (process creation trees, persistence changes, suspicious child processes)
-* Authenticode / notarization signature verification to reduce false positives
-* Per-process bandwidth (ETW on Windows, eBPF on Linux, nettop on macOS)
-* Signed release builds and auto-update of the application itself
+See [ROADMAP.md](ROADMAP.md) and the issues labelled
+[`roadmap`](https://github.com/dylanckoldan-boop/sentinel-vision/issues?q=is%3Aissue+label%3Aroadmap) — for example
+Linux fanotify on-access blocking, per-process bandwidth, macOS signature checks, translations and Linux packages.
+
+## Building the apps and the Windows installer
+
+```bash
+pip install . pyinstaller
+pyinstaller --noconfirm packaging/sentinel_vision.spec      # -> dist/SentinelVision (+ .app on macOS)
+# Windows only, with Inno Setup 6.3+ installed:
+iscc /DAppVersion=0.2.0 packaging\windows\SentinelVision.iss  # -> dist/installer/SentinelVision-0.2.0-Setup.exe
+```
+
+`python tools/fp_audit.py --update <folders>` scans known-clean software and lists anything that would be detected —
+run it before proposing new rules or heuristics. `python tools/make_icons.py` regenerates the app icons.
+
+## Releasing (maintainers)
+
+1. Update `__version__` in `src/sentinel_vision/__init__.py` and add a section to `CHANGELOG.md`.
+2. Commit, then tag: `git tag v<version> && git push origin v<version>`.
+3. The *Release* workflow builds all platforms, installs/upgrades/uninstalls the Windows installer on a clean machine,
+   smoke-tests macOS and Linux, and only then publishes the GitHub Release with `SHA256SUMS.txt`.
+   Run it without a tag (*Actions → Release → Run workflow*) to test a build without publishing.
 
 ## Pull requests
 

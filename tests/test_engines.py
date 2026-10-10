@@ -56,10 +56,25 @@ def test_detection_inside_zip_and_nested_tar(sentinel, workdir, eicar):
 def test_zip_bomb_is_flagged_not_expanded(sentinel, workdir):
     sentinel.settings.auto_quarantine = False
     z = workdir / "bomb.zip"
-    with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("zeros.bin", b"\0" * (20 * 1024 * 1024))
+    chunk = b"\0" * (8 * 1024 * 1024)
+    with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        with zf.open("zeros.bin", "w", force_zip64=True) as fh:
+            for _ in range(140):  # 1.1 GB of zeros -> ~1 MB on disk
+                fh.write(chunk)
+    assert z.stat().st_size < 5 * 1024 * 1024
     res = sentinel.scanner.scan_file(z)[0]
     assert any(d.name == "Archive.Bomb" for d in res.detections)
+
+
+def test_big_legit_archives_are_not_flagged(sentinel, workdir):
+    """Jars and icon packs have thousands of entries; hitting a coverage limit is not a detection."""
+    sentinel.settings.archive_max_members = 50
+    z = workdir / "icons.zip"
+    with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i in range(400):
+            zf.writestr(f"icons/{i}.svg", "<svg>" + " " * 5000 + "</svg>")
+    res = sentinel.scanner.scan_file(z)[0]
+    assert res.detections == [] and res.error == ""
 
 
 def test_oversized_files_are_skipped(sentinel, workdir):

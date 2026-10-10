@@ -1,0 +1,41 @@
+name: False positive
+description: A clean file or program was detected or quarantined
+labels: ["false-positive"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        To restore the file: **Quarantine → select it → Restore** (it is added to the exclusions automatically).
+        Please don't attach the file itself; the hash is enough.
+  - type: input
+    id: version
+    attributes:
+      label: Sentinel Vision version
+    validations:
+      required: true
+  - type: input
+    id: name
+    attributes:
+      label: Detection name and engine
+      description: As shown in History (e.g. `Heuristic.Packed` / heuristics, `SUSP_xyz` / yara)
+    validations:
+      required: true
+  - type: input
+    id: sha256
+    attributes:
+      label: SHA-256 of the file
+      description: "Shown in the scan details or the Quarantine tooltip. Windows: Get-FileHash file -Algorithm SHA256"
+    validations:
+      required: true
+  - type: input
+    id: product
+    attributes:
+      label: Which program / publisher does the file belong to, and where did you get it?
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Detection details
+      description: Copy the text from the Details dialog (indicators, rule names).
+      render: text

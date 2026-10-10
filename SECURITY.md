@@ -6,7 +6,8 @@ Sentinel Vision parses untrusted, potentially hostile files by design, so we tre
 
 **Please do not open a public issue for security problems.**
 
-Use GitHub's private reporting instead: **Security → Report a vulnerability** on this repository. Include:
+Use GitHub's private reporting instead: **Security → Report a vulnerability** on this repository
+(direct link: <https://github.com/dylanckoldan-boop/sentinel-vision/security/advisories/new>). Include:
 
 * affected version / commit
 * operating system
@@ -21,6 +22,8 @@ You will get an acknowledgement within 72 hours. We aim to release a fix for con
 * Escaping the quarantine (decrypting/executing quarantined content without the user restoring it)
 * Path traversal or arbitrary file write through updates, restores or archives
 * Command injection through firewall, ClamAV or freshclam integration
+* Tricking the self-updater into running a file other than the official, checksum-verified installer
+* Behavior monitoring terminating processes it should not (e.g. crafted command lines that kill system processes)
 * Detection bypasses that come from a bug in our code (not simply "this sample isn't in any signature set")
 
 ## Out of scope

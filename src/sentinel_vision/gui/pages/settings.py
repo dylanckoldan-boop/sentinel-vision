@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sentinel_vision import __version__
 from sentinel_vision.gui.pages.base import Page, ago
 from sentinel_vision.gui.widgets import label
 from sentinel_vision.gui.workers import Task, start
@@ -149,6 +150,16 @@ class SettingsPage(Page):
         self.tray = QCheckBox("Keep protecting in the system tray when the window is closed")
         self.tray.setChecked(st.minimize_to_tray)
         uf.addRow(self.tray)
+        self.app_updates = QCheckBox("Check for new versions of Sentinel Vision automatically")
+        self.app_updates.setChecked(st.check_app_updates)
+        uf.addRow(self.app_updates)
+        check_row = QHBoxLayout()
+        self.b_check_app = QPushButton("Check for app updates now")
+        self.b_check_app.clicked.connect(self.ctx.bridge.app_update_requested.emit)
+        check_row.addWidget(self.b_check_app)
+        check_row.addWidget(label(f"Installed version: {__version__}", "muted"))
+        check_row.addStretch(1)
+        uf.addRow(check_row)
         lay.addWidget(ui)
         lay.addStretch(1)
 
@@ -205,6 +216,7 @@ class SettingsPage(Page):
                 ports.append(int(tok))
         st.suspicious_ports = ports
         st.minimize_to_tray = self.tray.isChecked()
+        st.check_app_updates = self.app_updates.isChecked()
 
     def save(self) -> None:
         self._collect()
