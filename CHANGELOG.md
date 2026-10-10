@@ -11,8 +11,9 @@ All notable changes to Sentinel Vision are listed here. The format follows
   Windows components (for example `amsi.dll`, Windows Security and Defender files, and `vssadmin` help text). The rules
   now match the attack technique itself — typically in scripts — and never the Windows tools that merely contain the
   same API or command names.
-- Heuristics no longer flag library names such as `Windows.Data.Pdf.dll` as a "double extension", or Windows tools'
-  own help text as ransomware.
+- Heuristics no longer flag library names such as `Windows.Data.Pdf.dll` as a "double extension", Windows tools'
+  own help text as ransomware, or large PowerShell modules that merely use both web requests and
+  `Invoke-Expression` somewhere as download-and-run code.
 
 ### Added
 - **Catalog-signature verification**: most Windows system files are signed through Microsoft catalogs rather than an

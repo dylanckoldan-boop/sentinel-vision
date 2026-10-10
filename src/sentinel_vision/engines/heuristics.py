@@ -128,6 +128,16 @@ PACKER_SECTIONS = {
 }
 
 
+CRADLE_RES = [
+    re.compile(
+        r"(iex|invoke-expression)\s*\(?\s*\(?\s*(new-object\s+(system\.)?net\.webclient\)?\.download(string|data)"
+        r"|iwr|irm|invoke-webrequest|invoke-restmethod)\b"
+    ),
+    re.compile(r"\.download(string|data)\s*\([^)]{1,300}\)\s*\)?\s*\|\s*(iex|invoke-expression)\b"),
+    re.compile(r"\b(iwr|irm|invoke-webrequest|invoke-restmethod)\b[^|\n]{1,300}\|\s*(iex|invoke-expression)\b"),
+]
+
+
 @dataclass
 class Indicator:
     weight: int
@@ -360,9 +370,9 @@ class HeuristicEngine(Engine):
         # PowerShell
         if re.search(r"-(e|en|enc|enco|encodedcommand)\s+[a-z0-9+/=]{80,}", t):
             out.append(Indicator(40, "Obfuscation", "PowerShell encoded command"))
-        if _any(t_ns, "iex(", "invoke-expression") and _any(
-            t_ns, "downloadstring", "net.webclient", "invoke-webrequest", "iwr", "downloaddata", "start-bitstransfer"
-        ):
+        # IEX applied directly to downloaded content (not merely both words somewhere in a large module)
+        t_d = re.sub(r"[`^\"'+]", "", t)
+        if any(rx.search(t_d) for rx in CRADLE_RES):
             out.append(Indicator(45, "Downloader", "Downloads and executes code in memory"))
         if _has(t_ns, "frombase64string") and _any(t_ns, "iex", "invoke-expression", "reflection.assembly"):
             out.append(Indicator(30, "Obfuscation", "Decodes and executes base64 payload"))
