@@ -51,7 +51,8 @@ run it before proposing new rules or heuristics. `python tools/make_icons.py` re
 ## Releasing (maintainers)
 
 1. Update `__version__` in `src/sentinel_vision/__init__.py` and add a section to `CHANGELOG.md`.
-2. Commit, then tag: `git tag v<version> && git push origin v<version>`.
+2. Commit to `main`, then either push a tag (`git tag v<version> && git push origin v<version>`) or open
+   *Actions → Release → Run workflow* on `main` with **publish** ticked (the workflow creates the tag).
 3. The *Release* workflow builds all platforms, installs/upgrades/uninstalls the Windows installer on a clean machine,
    smoke-tests macOS and Linux, and only then publishes the GitHub Release with `SHA256SUMS.txt`.
    Run it without a tag (*Actions → Release → Run workflow*) to test a build without publishing.
