@@ -18,6 +18,8 @@ from pathlib import Path
 
 from sentinel_vision.config import Settings, data_dir
 from sentinel_vision.db import Database
+from sentinel_vision.engines import authenticode
+from sentinel_vision.engines.authenticode import Signature
 from sentinel_vision.engines.base import Detection, Engine, ScanObject, Severity
 from sentinel_vision.engines.clamav import ClamAVEngine
 from sentinel_vision.engines.hashes import HashEngine
@@ -30,6 +32,38 @@ log = logging.getLogger(__name__)
 PACKAGE_DIR = Path(__file__).resolve().parent
 PSEUDO_FS_ALLOWED = ("/dev/shm", "/run/media", "/run/user")  # real files live here
 PSEUDO_FS = ("/proc", "/sys", "/dev", "/run", "/snap", "/var/lib/docker", "/System/Volumes/Data/.Spotlight-V100")
+
+
+EXACT_ENGINES = ("hash", "clamav")
+
+
+def _system_dirs() -> tuple[str, ...]:
+    if sys.platform == "win32":
+        windir = os.environ.get("WINDIR") or os.environ.get("SystemRoot") or r"C:\Windows"
+        return (os.path.normcase(os.path.abspath(windir)),)
+    if sys.platform == "darwin":
+        return ("/System", "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/libexec", "/bin", "/sbin", "/Library/Apple")
+    return (
+        "/usr/bin",
+        "/usr/sbin",
+        "/usr/lib",
+        "/usr/lib64",
+        "/usr/libexec",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib64",
+        "/boot",
+    )
+
+
+SYSTEM_DIRS = _system_dirs()
+
+
+def is_system_path(path: str) -> bool:
+    """True for files that belong to the operating system itself."""
+    norm = os.path.normcase(os.path.abspath(path.split("!", 1)[0]))
+    return any(norm == d or norm.startswith(d.rstrip(os.sep) + os.sep) for d in SYSTEM_DIRS)
 
 
 @dataclass
@@ -175,6 +209,8 @@ class Scanner:
         res.detections, errs = self.scan_object(obj)
         if errs:
             res.error = "; ".join(errs)
+        self._drop_generated_rule_noise(res)
+        self._apply_publisher_trust(obj, res)
 
         member_results: list[ScanResult] = []
         if self.settings.scan_archives:
@@ -295,10 +331,44 @@ class Scanner:
                 f"{uncompressed // (1024 * 1024):,} MB packed into {max(1, compressed // 1024):,} KB ({ratio:,.0f}:1)"
             )
 
+    @staticmethod
+    def _drop_generated_rule_noise(res: ScanResult) -> None:
+        """Machine-generated code-byte rules (Malpedia "*_Auto") occasionally collide with ordinary libraries; on
+        operating-system files they are ignored. Everywhere else they still report."""
+        if res.detections and is_system_path(res.path):
+            res.detections = [
+                d for d in res.detections if not (d.engine == "yara" and d.name.lower().endswith("_auto"))
+            ]
+
+    @staticmethod
+    def _apply_publisher_trust(obj: ScanObject, res: ScanResult) -> None:
+        """Pattern (YARA) hits on a program with a valid, trusted publisher signature (Windows Authenticode) are
+        reported but not acted on automatically: broad community rules occasionally match legitimate signed
+        software. Exact matches (hash / ClamAV) are never softened."""
+        pattern_hits = [d for d in res.detections if d.engine == "yara" and d.severity >= Severity.HIGH]
+        if not pattern_hits or obj.fs_path is None or obj.head[:2] != b"MZ":
+            return
+        if authenticode.verify(str(obj.fs_path)) is not Signature.VALID:
+            return
+        if is_system_path(res.path):
+            # A validly signed operating-system component: broad community rules matching it are noise.
+            for d in pattern_hits:
+                log.info("ignoring %s on signed system file %s", d.name, res.path)
+            res.detections = [d for d in res.detections if d not in pattern_hits]
+            return
+        for d in pattern_hits:
+            d.severity = Severity.MEDIUM
+            d.description += " (file has a valid publisher signature — reported, not quarantined)"
+            d.details["signed"] = True
+
     # ------------------------------------------------------------------ actions
     def should_quarantine(self, res: ScanResult) -> bool:
         s = self.settings
         if not s.auto_quarantine:
+            return False
+        if is_system_path(res.path) and not any(d.engine in EXACT_ENGINES for d in res.detections):
+            # Operating-system files are only removed automatically on an exact (hash / ClamAV) match; a pattern
+            # or heuristic hit there is far more likely a false positive, and removing it could break the OS.
             return False
         if any(d.is_signature for d in res.detections):
             return True

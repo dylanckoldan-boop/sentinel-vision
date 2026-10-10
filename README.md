@@ -45,7 +45,7 @@ updating, uninstalling and troubleshooting.
 
 | | |
 |---|---|
-| **4 detection engines** | Hash blocklists (MD5/SHA-1/SHA-256) · YARA (bundled rules + [YARA Forge](https://yarahq.github.io/) + your own) · ClamAV (via `clamd` or `clamscan`) · static heuristics for unknown threats, with Windows Authenticode checks to avoid false alarms on signed software |
+| **4 detection engines** | Hash blocklists (MD5/SHA-1/SHA-256) · YARA (bundled rules + [YARA Forge](https://yarahq.github.io/) + your own) · ClamAV (via `clamd` or `clamscan`) · static heuristics for unknown threats, with Windows Authenticode and catalog-signature checks to avoid false alarms on signed software |
 | **Real-time protection** | Watches Downloads, Desktop, Documents, temp and autostart folders; new or changed files are scanned the moment they finish writing and known malware is quarantined automatically |
 | **Behavior monitoring** | Every new program is checked for attack techniques (malicious-document shells, download-and-run PowerShell, ransomware deleting backups, LOLBin abuse, reverse shells, miners) and its executable is scanned; confirmed malware is ended and quarantined. Auto-start locations are watched for new persistence. |
 | **Live traffic monitor** | Every TCP/UDP connection mapped to its process, checked against botnet-C2 and criminal-netblock feeds, with a live throughput graph, alerts, *End process*, *Block IP* (OS firewall) and reputation lookup |
@@ -101,8 +101,8 @@ auto-start entry added ─► reported, target scanned
 ```
 
 Clean results are cached by path + size + mtime and invalidated whenever definitions change, so repeat scans only
-touch new or modified files. A weekly [false-positive audit](.github/workflows/fp-audit.yml) scans thousands of clean
-system files on Windows, macOS and Linux with every engine.
+touch new or modified files. A weekly [false-positive audit](.github/workflows/fp-audit.yml) scans 20,000 clean system and
+application files on each of Windows, macOS and Linux with every engine and fails if anything would be removed.
 
 ## Security design
 
@@ -112,7 +112,7 @@ Security software is a high-value target, so Sentinel Vision is built defensivel
 * **Hardened parsing.** Size caps, member-count caps, decompression-bomb checks, YARA match timeouts, and every engine runs inside its own error boundary so a malformed file can't stop a scan.
 * **Safe updates.** HTTPS only (TLS 1.2+, certificate verification always on, HTTPS-only redirects), download size limits, YARA archives are extracted file-by-file with flattened names (no path traversal), and new rules are compile-checked then swapped in atomically — a bad update never removes working protection. App updates are verified against the release's SHA-256 checksums before they run.
 * **Encrypted quarantine.** AES-256-GCM with a per-install key stored owner-only; per-chunk nonces and authenticated position/final-chunk flags detect tampering, reordering and truncation; restores are verified against the original SHA-256 and never overwrite existing files.
-* **Careful automatic actions.** Only signature-confirmed malware and the actual backup-deletion tools are ended automatically; heuristic and technique alerts are report-only by default.
+* **Careful automatic actions.** Only signature-confirmed malware and the actual backup-deletion tools are ended automatically; heuristic and technique alerts are report-only by default. Pattern matches on validly signed programs, and anything short of an exact match on operating-system files, are reported rather than removed.
 * **No shell, ever.** External tools (`netsh`, `iptables`, `clamscan`, `freshclam`, `taskkill`) are called with argument lists; IPs are validated before any firewall rule is built; private/loopback addresses can't be blocked.
 * **Private by default.** No telemetry. Your files never leave your machine — only hash/IP feeds and update metadata are downloaded. Data lives in an owner-only directory.
 * **Self-protection from false positives.** The app's own install and data directories are excluded so its signature files are never "detected".

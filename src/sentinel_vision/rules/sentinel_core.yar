@@ -41,16 +41,12 @@ rule SV_PowerShell_Download_Cradle
         severity = "high"
         author = "Sentinel Vision"
     strings:
-        $dl1 = "DownloadString" nocase ascii wide
-        $dl2 = "DownloadData" nocase ascii wide
-        $dl3 = "Invoke-WebRequest" nocase ascii wide
-        $dl4 = "Net.WebClient" nocase ascii wide
-        $ex1 = "IEX" ascii wide
-        $ex2 = "Invoke-Expression" nocase ascii wide
-        $ex3 = "[Reflection.Assembly]::Load" nocase ascii wide
-        $hid = /-w(indowstyle)?\s+h(idden)?/ nocase ascii wide
+        // IEX applied directly to downloaded content, in either order
+        $c1 = /(iex|invoke-expression)\s*\(?\s*\(?\s*(new-object\s+(system\.)?net\.webclient\)?\.download(string|data)|iwr|irm|invoke-webrequest|invoke-restmethod)\b/ nocase ascii wide
+        $c2 = /\.download(string|data)\s*\([^)]{1,300}\)\s*\)?\s*\|\s*(iex|invoke-expression)\b/ nocase ascii wide
+        $c3 = /\b(iwr|irm|invoke-webrequest|invoke-restmethod)\b[^|\r\n]{1,300}\|\s*(iex|invoke-expression)\b/ nocase ascii wide
     condition:
-        filesize < 5MB and 1 of ($dl*) and 1 of ($ex*) and ($hid or 2 of ($dl*))
+        uint16(0) != 0x5A4D and filesize < 5MB and any of them
 }
 
 rule SV_Reverse_Shell_OneLiner
@@ -85,7 +81,9 @@ rule SV_Ransomware_Recovery_Inhibition
         $b2 = "bootstatuspolicy ignoreallfailures" nocase ascii wide
         $q = "/quiet" nocase ascii wide
     condition:
-        2 of ($v*, $w1, $b*) or (1 of ($v*) and $q)
+        // Strings from two different tools: the Windows tools themselves only ever contain their own commands.
+        (1 of ($v*) and $w1) or (1 of ($v*) and 1 of ($b*)) or ($w1 and 1 of ($b*))
+        or (uint16(0) != 0x5A4D and filesize < 2MB and 1 of ($v1, $v2) and $q)
 }
 
 rule SV_Ransom_Note
@@ -143,38 +141,34 @@ rule SV_HackTool_Mimikatz
 rule SV_AMSI_Bypass
 {
     meta:
-        description = "Disables the Windows Antimalware Scan Interface"
+        description = "Script that disables the Windows Antimalware Scan Interface"
         severity = "high"
         author = "Sentinel Vision"
     strings:
-        $a1 = "AmsiUtils" ascii wide
-        $a2 = "amsiInitFailed" ascii wide
+        $a1 = "AmsiUtils" nocase ascii wide
+        $a2 = "amsiInitFailed" nocase ascii wide
         $a3 = "AmsiScanBuffer" ascii wide
         $p1 = "VirtualProtect" ascii wide
         $p2 = "GetProcAddress" ascii wide
-        $p3 = "SetValue($null,$true)" nocase ascii wide
-        $p4 = "NonPublic,Static" nocase ascii wide
+        $p3 = /SetValue\(\s*\$null\s*,\s*\$true\s*\)/ nocase ascii wide
     condition:
-        filesize < 5MB and 1 of ($a*) and 1 of ($p*)
+        // scripts only: amsi.dll and legitimate security products contain these API names
+        uint16(0) != 0x5A4D and filesize < 2MB and (($a1 and ($a2 or $p3)) or ($a3 and $p1 and $p2))
 }
 
 rule SV_Defender_Tampering
 {
     meta:
-        description = "Disables Microsoft Defender or adds broad exclusions"
+        description = "Script that disables Microsoft Defender or adds broad exclusions"
         severity = "high"
         author = "Sentinel Vision"
     strings:
-        $m1 = "Set-MpPreference" nocase ascii wide
-        $m2 = "Add-MpPreference" nocase ascii wide
-        $o1 = "DisableRealtimeMonitoring" nocase ascii wide
-        $o2 = "DisableBehaviorMonitoring" nocase ascii wide
-        $o3 = "DisableIOAVProtection" nocase ascii wide
-        $o4 = "ExclusionPath" nocase ascii wide
-        $r1 = "SOFTWARE\\Policies\\Microsoft\\Windows Defender" nocase ascii wide
-        $r2 = "DisableAntiSpyware" nocase ascii wide
+        $m1 = /Set-MpPreference\s+(-\w+\s+\S+\s+)*-Disable(RealtimeMonitoring|BehaviorMonitoring|IOAVProtection|ScriptScanning|BlockAtFirstSeen)\s+(\$true|1)\b/ nocase ascii wide
+        $m2 = /Add-MpPreference\s+(-\w+\s+\S+\s+)*-Exclusion(Path|Process|Extension)\s+["']?([a-z]:\\?["']?(\s|$)|\*|\.?exe\b)/ nocase ascii wide
+        $r1 = /Windows Defender[^\r\n]{0,80}\/v\s+"?DisableAntiSpyware"?[^\r\n]{0,60}\/d\s+1/ nocase ascii wide
     condition:
-        (1 of ($m*) and 1 of ($o*)) or ($r1 and $r2)
+        // scripts only: Defender's own PowerShell module and binaries contain these names legitimately
+        uint16(0) != 0x5A4D and filesize < 5MB and any of them
 }
 
 rule SV_Office_AutoExec_Shell_Macro

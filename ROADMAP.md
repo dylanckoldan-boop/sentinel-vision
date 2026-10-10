@@ -17,6 +17,7 @@ comment there before starting so work isn't duplicated.
 | Behavior monitoring: process-technique rules, scanning of newly started programs, persistence watcher, ransomware backup-deletion blocking | 0.2.0 |
 | App self-update with SHA-256-verified installer (Windows) and update notifications (all platforms) | 0.2.0 |
 | Authenticode verification to cut false positives (Windows) | 0.2.0 |
+| Catalog-signature verification for Windows system files; signed-publisher and OS-file safeguards | 0.2.1 |
 | Command-line tool inside the installed app | 0.2.0 |
 | macOS Full Disk Access guidance | 0.2.0 |
 | False-positive audit tool + weekly cross-platform audit | 0.2.0 |

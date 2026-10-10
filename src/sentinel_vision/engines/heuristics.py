@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import math
 import re
+import sys
 import time
 import zipfile
 from collections import Counter
@@ -55,6 +56,11 @@ EXEC_EXT = {
     "sh",
     "apk",
 }
+# what a victim can double-click (libraries such as "Windows.Data.Pdf.dll" are not)
+LAUNCHABLE_EXT = {
+    "exe", "scr", "com", "pif", "cpl", "msi", "bat", "cmd", "ps1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "hta",
+    "lnk", "jar", "sh", "app", "apk",
+}  # fmt: skip
 DECOY_EXT = {
     "pdf",
     "doc",
@@ -120,6 +126,16 @@ PACKER_SECTIONS = {
     b".yp": ("Y0da", 25),
     b"mew": ("MEW", 25),
 }
+
+
+CRADLE_RES = [
+    re.compile(
+        r"(iex|invoke-expression)\s*\(?\s*\(?\s*(new-object\s+(system\.)?net\.webclient\)?\.download(string|data)"
+        r"|iwr|irm|invoke-webrequest|invoke-restmethod)\b"
+    ),
+    re.compile(r"\.download(string|data)\s*\([^)]{1,300}\)\s*\)?\s*\|\s*(iex|invoke-expression)\b"),
+    re.compile(r"\b(iwr|irm|invoke-webrequest|invoke-restmethod)\b[^|\n]{1,300}\|\s*(iex|invoke-expression)\b"),
+]
 
 
 @dataclass
@@ -203,7 +219,7 @@ class HeuristicEngine(Engine):
             out.append(Indicator(70, "Masquerade", "Right-to-left override character hides the real extension"))
         is_exe = head[:2] == b"MZ" or head[:4] == b"\x7fELF"
         parts = lname.split(".")
-        if len(parts) >= 3 and parts[-1] in EXEC_EXT and parts[-2] in DECOY_EXT:
+        if len(parts) >= 3 and parts[-1] in LAUNCHABLE_EXT and parts[-2] in DECOY_EXT:
             # A document-looking name that is really a program is a classic phishing trick.
             weight = (
                 60 if (is_exe or parts[-1] in SCRIPT_EXT or parts[-1] in {"scr", "pif", "com", "lnk", "hta"}) else 40
@@ -237,7 +253,10 @@ class HeuristicEngine(Engine):
             out.append(Indicator(15, "Malformed", "PE structure could not be fully analysed"))
         finally:
             pe.close()  # release the file mapping (on Windows an open mapping locks the file)
-        if has_signature and obj.fs_path is not None:
+        suspicious = sum(i.weight for i in out) > 0
+        # Embedded signatures are checked always (a broken one is itself suspicious); on Windows, files without one
+        # are checked against the system catalogs when there is something to weigh against.
+        if obj.fs_path is not None and (has_signature or (sys.platform == "win32" and suspicious)):
             sig = authenticode.verify(str(obj.fs_path))
             if sig is Signature.TAMPERED:
                 out.append(
@@ -245,7 +264,7 @@ class HeuristicEngine(Engine):
                 )
             elif sig is Signature.VALID and sum(i.weight for i in out) > 0:
                 out.append(Indicator(-60, "Signed", "Valid Authenticode signature from a trusted publisher"))
-            elif sig is Signature.UNAVAILABLE and out:
+            elif sig is Signature.UNAVAILABLE and has_signature and out:
                 out.append(Indicator(-10, "Signed", "Carries an Authenticode signature (verified only on Windows)"))
         return out
 
@@ -351,9 +370,9 @@ class HeuristicEngine(Engine):
         # PowerShell
         if re.search(r"-(e|en|enc|enco|encodedcommand)\s+[a-z0-9+/=]{80,}", t):
             out.append(Indicator(40, "Obfuscation", "PowerShell encoded command"))
-        if _any(t_ns, "iex(", "invoke-expression") and _any(
-            t_ns, "downloadstring", "net.webclient", "invoke-webrequest", "iwr", "downloaddata", "start-bitstransfer"
-        ):
+        # IEX applied directly to downloaded content (not merely both words somewhere in a large module)
+        t_d = re.sub(r"[`^\"'+]", "", t)
+        if any(rx.search(t_d) for rx in CRADLE_RES):
             out.append(Indicator(45, "Downloader", "Downloads and executes code in memory"))
         if _has(t_ns, "frombase64string") and _any(t_ns, "iex", "invoke-expression", "reflection.assembly"):
             out.append(Indicator(30, "Obfuscation", "Decodes and executes base64 payload"))
@@ -438,8 +457,12 @@ class HeuristicEngine(Engine):
             b"bcdedit /set {default} bootstatuspolicy ignoreallfailures",
         ]
         hits = [r for r in ransom if r in blob]
-        if hits:
-            out.append(Indicator(50 if len(hits) == 1 else 70, "Ransomware", "Deletes backups / shadow copies"))
+        families = {h.split()[0].split(b".")[0] for h in hits}  # vssadmin / wmic / wbadmin / bcdedit
+        if len(families) >= 2:
+            out.append(Indicator(70, "Ransomware", "Deletes backups with several different tools"))
+        elif hits and head[:2] != b"MZ":
+            # a single tool's command inside a script; the Windows tools' own help text contains it too
+            out.append(Indicator(50, "Ransomware", "Deletes backups / shadow copies"))
         if b"stratum+tcp://" in blob or b"stratum+ssl://" in blob or b"xmrig" in blob:
             out.append(Indicator(55, "CoinMiner", "Cryptocurrency mining pool / miner"))
         if b"your files have been encrypted" in blob or b"files are encrypted" in blob and b"bitcoin" in blob:

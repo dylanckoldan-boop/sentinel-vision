@@ -37,7 +37,7 @@ def main() -> int:
     from sentinel_vision.core import Sentinel
 
     settings = Settings()
-    settings.auto_quarantine = False
+    # report-only scanning (act=False below); auto_quarantine stays on so should_quarantine() reflects defaults
     settings.realtime_enabled = settings.network_enabled = False
     settings.feeds = [f for f in settings.feeds if f.kind == "yara_zip"]
     sv = Sentinel(settings)
@@ -59,7 +59,8 @@ def main() -> int:
             findings.append(res)
 
     def is_sig(r) -> bool:
-        return any(d.is_signature for d in r.detections)
+        # "signature-grade" = what the app would remove automatically with default settings
+        return sv.scanner.should_quarantine(r)
 
     sig = [r for r in findings if is_sig(r)]
     heur = [r for r in findings if not is_sig(r)]
@@ -71,8 +72,8 @@ def main() -> int:
         f"- Platform: `{sys.platform}` · scanned **{scanned:,}** files in {time.time() - started:,.0f}s",
         f"- Paths: {', '.join(f'`{p}`' for p in args.paths)}",
         f"- Engines: {engines}",
-        f"- Signature-grade detections (would be auto-quarantined): **{len(sig)}**",
-        f"- Heuristic-only detections (report-only): **{len(heur)}**",
+        f"- Detections that would be auto-quarantined with default settings: **{len(sig)}**",
+        f"- Report-only detections (heuristics, signed or OS files): **{len(heur)}**",
         "",
     ]
     if findings:
@@ -84,6 +85,15 @@ def main() -> int:
         lines += [f"- {name}: {n}" for name, n in by_name.most_common(20)]
     report = "\n".join(lines)
     print(report)
+    if os.environ.get("GITHUB_ACTIONS"):
+        # annotations are readable from the API and the run page without opening logs
+        brief = [
+            f"{scanned:,} files · would quarantine: {len(sig)} · report-only: {len(heur)}",
+            *[f"{r.path}: " + "; ".join(f"{d.engine}:{d.name}" for d in r.detections) for r in findings[:15]],
+        ]
+        level = "error" if sig else "notice"
+        enc = "\n".join(brief).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+        print(f"::{level} title=False-positive audit ({sys.platform})::{enc}")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as fh:
