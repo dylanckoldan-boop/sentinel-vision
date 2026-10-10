@@ -84,6 +84,15 @@ def main() -> int:
         lines += [f"- {name}: {n}" for name, n in by_name.most_common(20)]
     report = "\n".join(lines)
     print(report)
+    if os.environ.get("GITHUB_ACTIONS"):
+        # annotations are readable from the API and the run page without opening logs
+        brief = [
+            f"{scanned:,} files · signature-grade: {len(sig)} · heuristic-only: {len(heur)}",
+            *[f"{r.path}: " + "; ".join(f"{d.engine}:{d.name}" for d in r.detections) for r in findings[:15]],
+        ]
+        level = "error" if sig else "notice"
+        enc = "\n".join(brief).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+        print(f"::{level} title=False-positive audit ({sys.platform})::{enc}")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as fh:
