@@ -149,3 +149,34 @@ def test_authenticode_detects_valid_and_tampered(tmp_path):
     data[len(data) // 3] ^= 0xFF
     copy.write_bytes(bytes(data))
     assert verify(str(copy)) is Signature.TAMPERED
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Authenticode is Windows-only")
+def test_pattern_hits_on_signed_programs_are_report_only(sentinel, tmp_path):
+    from sentinel_vision.config import sub_dir
+
+    candidates = [
+        sys.executable,
+        os.path.join(os.path.dirname(sys.executable), "pythonw.exe"),
+        r"C:\Program Files\PowerShell\7\pwsh.exe",
+        r"C:\Program Files\Git\cmd\git.exe",
+    ]
+    signed = next((c for c in candidates if os.path.exists(c) and verify(c) is Signature.VALID), None)
+    if signed is None:
+        pytest.skip("no embedded-signature binary available on this machine")
+    (sub_dir("rules/custom") / "all_pe.yar").write_text(
+        'rule Test_Any_PE { meta: severity = "high" condition: uint16(0) == 0x5A4D }'
+    )
+    sentinel.scanner.reload_signatures()
+    copy = tmp_path / "signed.exe"
+    shutil.copyfile(signed, copy)
+    res = sentinel.scanner.scan_file(copy, act=False, use_cache=False)[0]
+    hit = next(d for d in res.detections if d.name == "Test_Any_PE")
+    assert hit.severity == Severity.MEDIUM and hit.details.get("signed")
+    assert sentinel.scanner.should_quarantine(res) is False
+    data = bytearray(copy.read_bytes())
+    data[len(data) // 3] ^= 0xFF
+    copy.write_bytes(bytes(data))
+    res2 = sentinel.scanner.scan_file(copy, act=False, use_cache=False)[0]
+    hit2 = next(d for d in res2.detections if d.name == "Test_Any_PE")
+    assert hit2.severity == Severity.HIGH and sentinel.scanner.should_quarantine(res2) is True

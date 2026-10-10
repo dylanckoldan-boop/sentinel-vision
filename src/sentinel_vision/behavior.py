@@ -30,7 +30,7 @@ from pathlib import Path
 import psutil
 
 from sentinel_vision.engines.base import Severity
-from sentinel_vision.scanner import Scanner, kill_process
+from sentinel_vision.scanner import EXACT_ENGINES, Scanner, is_system_path, kill_process
 
 log = logging.getLogger(__name__)
 
@@ -510,9 +510,10 @@ class BehaviorMonitor:
         if not res.infected:
             return None
         top = res.top
-        confirmed = any(
-            d.engine in ("hash", "clamav") or (d.engine == "yara" and d.severity >= Severity.CRITICAL)
-            for d in res.detections
+        exact = any(d.engine in EXACT_ENGINES for d in res.detections)
+        confirmed = exact or (
+            not is_system_path(exe)
+            and any(d.engine == "yara" and d.severity >= Severity.CRITICAL for d in res.detections)
         )
         action = "reported"
         if confirmed and self.settings.behavior_kill_malicious and pid:
