@@ -72,3 +72,24 @@ def test_system_files_are_never_auto_quarantined_on_pattern_matches(sentinel):
     assert sentinel.scanner.should_quarantine(yara_hit) is False
     assert sentinel.scanner.should_quarantine(hash_hit) is True
     assert sentinel.scanner.should_quarantine(user_hit) is True
+
+
+def test_generated_rules_are_ignored_on_os_files_only(sentinel):
+    import os
+    import sys
+
+    from sentinel_vision.scanner import Scanner
+
+    sysfile = (
+        os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "v.dll")
+        if sys.platform == "win32"
+        else "/usr/lib/v.so"
+    )
+    res = ScanResult(sysfile, detections=[Detection("yara", "MALPEDIA_Win_X_Auto", Severity.HIGH)])
+    Scanner._drop_generated_rule_noise(res)
+    assert res.detections == []
+    user = ScanResult(
+        os.path.expanduser("~/Downloads/v.dll"), detections=[Detection("yara", "MALPEDIA_Win_X_Auto", Severity.HIGH)]
+    )
+    Scanner._drop_generated_rule_noise(user)
+    assert len(user.detections) == 1

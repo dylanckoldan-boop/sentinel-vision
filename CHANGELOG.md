@@ -22,6 +22,8 @@ All notable changes to Sentinel Vision are listed here. The format follows
   automatically, and are ignored on validly signed operating-system components. Exact matches (hash / ClamAV) are
   unaffected.
 - Heuristics take catalog signatures into account, so signed Windows components no longer raise heuristic alerts.
+- Machine-generated Malpedia rules (`*_Auto`) are ignored on operating-system files, where they occasionally collide
+  with ordinary graphics or system libraries; they still apply everywhere else.
 - Operating-system files (`C:\Windows`, `/System`, `/usr/bin`, …) are only removed automatically on an exact
   hash or ClamAV match; other findings there are reported for review.
 

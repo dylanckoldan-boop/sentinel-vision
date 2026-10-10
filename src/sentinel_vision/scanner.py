@@ -209,6 +209,7 @@ class Scanner:
         res.detections, errs = self.scan_object(obj)
         if errs:
             res.error = "; ".join(errs)
+        self._drop_generated_rule_noise(res)
         self._apply_publisher_trust(obj, res)
 
         member_results: list[ScanResult] = []
@@ -329,6 +330,15 @@ class Scanner:
             raise ArchiveLimitError(
                 f"{uncompressed // (1024 * 1024):,} MB packed into {max(1, compressed // 1024):,} KB ({ratio:,.0f}:1)"
             )
+
+    @staticmethod
+    def _drop_generated_rule_noise(res: ScanResult) -> None:
+        """Machine-generated code-byte rules (Malpedia "*_Auto") occasionally collide with ordinary libraries; on
+        operating-system files they are ignored. Everywhere else they still report."""
+        if res.detections and is_system_path(res.path):
+            res.detections = [
+                d for d in res.detections if not (d.engine == "yara" and d.name.lower().endswith("_auto"))
+            ]
 
     @staticmethod
     def _apply_publisher_trust(obj: ScanObject, res: ScanResult) -> None:
