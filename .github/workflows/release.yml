@@ -83,7 +83,7 @@ jobs:
           Copy-Item "dist\installer\SentinelVision-$env:VERSION-Setup.exe" out\
           Compress-Archive -Path dist\SentinelVision -DestinationPath "out\SentinelVision-$env:VERSION-windows-portable.zip"
           Get-ChildItem out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: out/*
@@ -198,7 +198,7 @@ jobs:
           }
       - name: Upload installer logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: installer-logs
           path: "*.log"
@@ -255,7 +255,7 @@ jobs:
             tar -C dist -czf "out/SentinelVision-$VERSION-linux-x86_64.tar.gz" SentinelVision
           fi
           ls -la out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: out/*
