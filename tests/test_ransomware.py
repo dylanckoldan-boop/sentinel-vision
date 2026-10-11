@@ -14,7 +14,8 @@ from sentinel_vision.vault import RollbackVault, VaultError, looks_encrypted
 def _docx(text: str) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
-        z.writestr("word/document.xml", f"<w>{text}</w>")
+        # fixed timestamp: identical input must give identical bytes (the default is "now")
+        z.writestr(zipfile.ZipInfo("word/document.xml", date_time=(2026, 1, 1, 0, 0, 0)), f"<w>{text}</w>")
     return buf.getvalue()
 
 

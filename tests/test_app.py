@@ -18,6 +18,17 @@ def test_settings_roundtrip_and_corruption(isolated_home):
     assert Settings.load().heuristic_threshold == Settings().heuristic_threshold
 
 
+def test_saved_feeds_keep_choice_but_get_current_descriptions(isolated_home):
+    s = Settings()
+    phish = next(f for f in s.feeds if f.name == "OpenPhish community feed")
+    phish.enabled = False
+    phish.description = "old text"
+    s.save()
+    loaded = next(f for f in Settings.load().feeds if f.name == "OpenPhish community feed")
+    assert loaded.enabled is False
+    assert "non-commercial" in loaded.description
+
+
 def test_feed_url_needs_key():
     s = Settings()
     mb = next(f for f in s.feeds if f.requires_key)

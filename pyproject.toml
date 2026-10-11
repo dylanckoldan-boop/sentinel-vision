@@ -81,3 +81,4 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S"]
 "src/sentinel_vision/gui/theme.py" = ["E501"]  # Qt stylesheet
+"site/build.py" = ["E501"]  # HTML templates

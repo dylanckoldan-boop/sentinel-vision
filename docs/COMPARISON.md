@@ -4,7 +4,7 @@ This comparison uses **only public information**: the vendors' published feature
 independent lab results (sources at the end). No competitor software was decompiled or reverse-engineered, and no
 competitor code is used; every Sentinel Vision feature is an independent, open-source implementation.
 
-Last reviewed: October 2026 (Sentinel Vision 0.3.0).
+Last reviewed: October 2026 (Sentinel Vision 0.3.1).
 
 ## Protection features
 
@@ -40,7 +40,7 @@ Last reviewed: October 2026 (Sentinel Vision 0.3.0).
 | Missing | Why |
 |---|---|
 | **Blocking a file before it opens** (kernel driver / OS security APIs) | Windows minifilter drivers must be signed by Microsoft; macOS Endpoint Security needs an Apple-granted entitlement. Linux fanotify blocking is on the [roadmap](../ROADMAP.md). |
-| **Large proprietary cloud and telemetry network** | Their detection learns from hundreds of millions of devices. Sentinel Vision relies on public, community threat intelligence and never collects user data. |
+| **Large proprietary cloud and telemetry network** | Their detection draws on data collected across their customers' devices. Sentinel Vision relies on public, community threat intelligence and never collects user data. |
 | **Independent lab certification** | AV-TEST and AV-Comparatives test commercial products by vendor application. Their August 2026 AV-TEST results gave Norton and McAfee 6/6 for protection. Sentinel Vision has not been lab-tested. |
 | **VPN** | Needs paid server infrastructure; it is a privacy service, not malware protection. |
 | **Identity theft insurance, data-broker removal, credit monitoring** | Commercial services, not software. |

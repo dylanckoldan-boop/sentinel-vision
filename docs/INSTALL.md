@@ -98,7 +98,7 @@ PATH"** in the installer).
 ## After installing: steps for full protection
 
 1. **Download the threat definitions**: open **Settings & updates → Update now**. (This also runs automatically every
-   6 hours.) It downloads YARA rules, botnet/criminal IP lists and 500,000+ malware and phishing websites.
+   6 hours.) It downloads YARA rules, botnet/criminal IP lists and hundreds of thousands of malware and phishing websites.
 2. **Run the Security checkup** (sidebar → Checkup) and fix anything marked *At risk*.
 3. **Turn on system-wide website blocking**: Web Shield → **Turn on / refresh blocking** (asks for administrator
    permission once). Every browser and app is then kept away from known malware and phishing sites.

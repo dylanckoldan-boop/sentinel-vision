@@ -132,13 +132,13 @@ DEFAULT_FEEDS: list[Feed] = [
         "Phishing Army",
         "https://phishing.army/download/phishing_army_blocklist.txt",
         "domains_phishing",
-        description="Phishing domains aggregated from PhishTank, OpenPhish and others.",
+        description="Phishing domains from several sources. Licence CC BY-NC 4.0: personal, non-commercial use.",
     ),
     Feed(
         "OpenPhish community feed",
         "https://openphish.com/feed.txt",
         "domains_phishing",
-        description="Phishing URLs detected in the last hours (free community feed).",
+        description="Phishing URLs seen in the last hours. Free feed for personal, non-commercial use only.",
     ),
     Feed(
         "CINS Army bad actors",
@@ -288,6 +288,11 @@ class Settings:
         # feeds added in newer versions appear for people upgrading with saved settings
         known_feeds = {f.name for f in s.feeds}
         s.feeds += [Feed(**asdict(f)) for f in DEFAULT_FEEDS if f.name not in known_feeds]
+        # built-in feeds keep the current description (licence notes can change); the user's on/off choice stays
+        defaults = {f.name: f for f in DEFAULT_FEEDS}
+        for f in s.feeds:
+            if f.name in defaults:
+                f.description = defaults[f.name].description
         return s
 
     def save(self) -> None:

@@ -3,6 +3,27 @@
 All notable changes to Sentinel Vision are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-10-11
+
+### Added
+- Project website (`site/`), published with GitHub Pages: features, a complete list of everything the app sends over
+  the internet, privacy policy, terms, cookie policy and accessibility statement. No JavaScript, no cookies and no
+  third-party requests; every build is checked for broken links, missing alt text, colour contrast and accessibility.
+- First release signed with the post-quantum release key (`SHA256SUMS.txt.sig`), so apps can update themselves.
+
+### Fixed
+- Ransomware decoys were rebuilt with a new timestamp inside the file, so the uninstaller didn't recognise older
+  decoys and left them behind. Decoys are now byte-identical every time, and older ones are recognised too.
+- A decoy could overwrite an existing file of yours that happened to have the same name. Such files are now left alone.
+
+### Changed
+- The Phishing Army and OpenPhish feeds now say in Settings that they're for personal, non-commercial use, and the
+  README credits every data source with its licence.
+- The Windows uninstaller's "delete data" question now mentions the rollback vault (encrypted earlier versions of
+  your documents).
+- Screenshots retaken with demonstration data; the web-blocking count in the docs is now stated without an
+  unverified figure.
+
 ## [0.3.0] - 2026-10-11
 
 ### Added

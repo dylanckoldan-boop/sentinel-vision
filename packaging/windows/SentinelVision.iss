@@ -246,7 +246,9 @@ begin
     DataDir := ExpandConstant('{localappdata}\SentinelVision');
     if DirExists(DataDir) and (not UninstallSilent()) then
     begin
-      if MsgBox('Also delete Sentinel Vision''s data (settings, detection history, downloaded definitions and the encrypted quarantine)?' + #13#10#13#10 +
+      if MsgBox('Also delete Sentinel Vision''s data?' + #13#10#13#10 +
+                'This includes settings, detection history, downloaded definitions, the encrypted quarantine and the ' +
+                'rollback vault (encrypted earlier versions of your documents). Your own documents are not affected.' + #13#10#13#10 +
                 'Choose No to keep it for a future reinstall.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
         DelTree(DataDir, True, True, True);
     end;
