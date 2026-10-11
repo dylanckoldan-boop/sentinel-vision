@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/screenshots/overview.png" alt="Sentinel Vision overview" width="900">
+  <img src="docs/screenshots/overview.png" alt="Sentinel Vision overview screen reporting that ransomware activity was stopped" width="900">
 </p>
 
 <h1 align="center">Sentinel Vision</h1>
@@ -18,10 +18,12 @@
 
 <p align="center">
   <a href="https://github.com/dylanckoldan-boop/sentinel-vision/releases/latest"><b>⬇ Download</b></a> ·
+  <a href="https://dylanckoldan-boop.github.io/sentinel-vision/">Website</a> ·
   <a href="docs/INSTALL.md">Installation guide</a> ·
   <a href="docs/COMPARISON.md">vs Norton &amp; McAfee</a> ·
   <a href="ROADMAP.md">Roadmap</a> ·
-  <a href="CHANGELOG.md">Changelog</a>
+  <a href="CHANGELOG.md">Changelog</a> ·
+  <a href="https://dylanckoldan-boop.github.io/sentinel-vision/privacy.html">Privacy</a>
 </p>
 
 ---
@@ -50,7 +52,7 @@ updating, uninstalling and troubleshooting.
 | **Real-time protection** | Watches Downloads, Desktop, Documents, temp and autostart folders; new or changed files are scanned the moment they finish writing and known malware is quarantined automatically |
 | **Behavior monitoring** | Every new program is checked for attack techniques (malicious-document shells, download-and-run PowerShell, ransomware deleting backups, LOLBin abuse, reverse shells, miners) and its executable is scanned; confirmed malware is ended and quarantined. Auto-start locations are watched for new persistence. |
 | **Ransomware shield & rollback** | Hidden decoy files and encryption-burst detection catch ransomware in the act and freeze the program responsible; every good version of your documents is kept in an encrypted vault so you can roll back to before the attack |
-| **Web Shield** | 500,000+ malware and phishing domains from four free feeds, blocked system-wide for every browser and app (optional), plus a local link checker that catches look-alike brands and homograph tricks |
+| **Web Shield** | Hundreds of thousands of malware and phishing domains from four free feeds, blocked system-wide for every browser and app (optional), plus a local link checker that catches look-alike brands and homograph tricks |
 | **Security checkup** | A score for your computer's settings — firewall, encryption, updates, outdated apps, Remote Desktop, SMBv1, Secure Boot, Wi-Fi — with exact fixes; plus router-spoofing (ARP) and DNS-hijack detection |
 | **Memory scan** | Finds fileless malware in the memory of running programs |
 | **Privacy & tools** | Camera/microphone use alerts, password breach check (k-anonymity: the password never leaves your device), file shredder, quiet mode |
@@ -67,6 +69,8 @@ updating, uninstalling and troubleshooting.
   <img src="docs/screenshots/webshield.png" alt="Web Shield link checker" width="49%">
   <img src="docs/screenshots/checkup.png" alt="Security checkup" width="49%">
   <img src="docs/screenshots/network.png" alt="Live traffic monitor" width="49%">
+  <img src="docs/screenshots/protection.png" alt="Protection settings and recent detections" width="49%">
+  <img src="docs/screenshots/tools.png" alt="Camera and microphone alerts, password breach check and file shredder" width="49%">
 </p>
 
 **How does it compare with Norton and McAfee?** See the [source-backed comparison](docs/COMPARISON.md).
@@ -203,7 +207,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) — rules, heuristics, feeds and the [roa
 
 ## Credits
 
-Detection content comes from the security community: [YARA](https://virustotal.github.io/yara/), [YARA Forge](https://github.com/YARAHQ/yara-forge) and the rule authors it aggregates, [ClamAV](https://www.clamav.net/), [abuse.ch](https://abuse.ch/) (MalwareBazaar, Feodo Tracker, ThreatFox), [Spamhaus](https://www.spamhaus.org/drop/), [Proofpoint Emerging Threats](https://rules.emergingthreats.net/) and [CINS Army](https://cinsscore.com/). Downloaded rule sets and feeds remain under their own licenses and terms of use.
+Detection content comes from the security community: [YARA](https://virustotal.github.io/yara/), [YARA Forge](https://github.com/YARAHQ/yara-forge) and the rule authors it aggregates, [ClamAV](https://www.clamav.net/), [abuse.ch](https://abuse.ch/) (MalwareBazaar, Feodo Tracker, ThreatFox, URLhaus), [Spamhaus](https://www.spamhaus.org/drop/), [Proofpoint Emerging Threats](https://rules.emergingthreats.net/), [CINS Army](https://cinsscore.com/), [Phishing.Database](https://github.com/Phishing-Database/Phishing.Database), [Phishing Army](https://phishing.army/), [OpenPhish](https://openphish.com/), [CIRCL hashlookup](https://hashlookup.circl.lu/) and [Have I Been Pwned](https://haveibeenpwned.com/Passwords) (Pwned Passwords). Each app downloads these directly from their publishers; Sentinel Vision does not redistribute them, and they remain under their own licences and terms of use. Two of them are for **personal, non-commercial use only** — [Phishing Army](https://phishing.army/) ([CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)) and the [OpenPhish](https://openphish.com/terms.html) community feed — so if you use Sentinel Vision in a business, untick those two under **Settings → Threat definitions → Sources** (or obtain the publishers' permission).
+
+The website uses [Atkinson Hyperlegible](https://www.brailleinstitute.org/freefont/) by the Braille Institute (SIL Open Font License 1.1).
 
 ## License
 

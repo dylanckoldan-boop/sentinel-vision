@@ -18,8 +18,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install ruff
-      - run: ruff check src tests tools
-      - run: ruff format --check src tests tools
+      - run: ruff check src tests tools site
+      - run: ruff format --check src tests tools site
 
   test:
     strategy:
