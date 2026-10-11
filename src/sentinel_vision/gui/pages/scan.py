@@ -44,7 +44,9 @@ class ScanPage(Page):
         self.b_folder = QPushButton("Scan folder…")
         self.b_file = QPushButton("Scan file…")
         self.b_proc = QPushButton("Running processes")
-        for b in (self.b_quick, self.b_full, self.b_folder, self.b_file, self.b_proc):
+        self.b_mem = QPushButton("Memory scan")
+        self.b_mem.setToolTip("Scan the memory of running programs for fileless malware (report-only)")
+        for b in (self.b_quick, self.b_full, self.b_folder, self.b_file, self.b_proc, self.b_mem):
             row.addWidget(b)
         row.addStretch(1)
         self.chk_rescan = QCheckBox("Re-check unchanged files")
@@ -104,6 +106,7 @@ class ScanPage(Page):
         self.b_folder.clicked.connect(self.folder_scan)
         self.b_file.clicked.connect(self.file_scan)
         self.b_proc.clicked.connect(self.process_scan)
+        self.b_mem.clicked.connect(self.memory_scan)
         self.b_cancel.clicked.connect(self.cancel)
         self.b_q.clicked.connect(self.quarantine_selected)
         self.b_kill.clicked.connect(self.kill_selected)
@@ -122,7 +125,7 @@ class ScanPage(Page):
             self.quick_scan()
 
     def _busy(self, busy: bool) -> None:
-        for b in (self.b_quick, self.b_full, self.b_folder, self.b_file, self.b_proc):
+        for b in (self.b_quick, self.b_full, self.b_folder, self.b_file, self.b_proc, self.b_mem):
             b.setEnabled(not busy)
         self.b_cancel.setVisible(busy)
         self.bar.setRange(0, 0 if busy else 1)
@@ -181,6 +184,35 @@ class ScanPage(Page):
         if files:
             self.chk_rescan.setChecked(True)
             self._scan_roots(f"Scanning {len(files)} file(s)…", files)
+
+    def memory_scan(self) -> None:
+        from sentinel_vision import memscan
+        from sentinel_vision.engines.base import Detection, Severity
+
+        sc = self.s.scanner
+
+        def work(t: Task) -> ScanSummary:
+            ms = memscan.scan_processes(sc, progress=t.progress, cancel=t.cancel)
+            out = ScanSummary(scanned=ms.scanned, infected=len(ms.hits), skipped=ms.skipped + ms.denied)
+            out.cancelled = ms.cancelled
+            for h in ms.hits:
+                dets = [
+                    Detection(
+                        "memory",
+                        rule,
+                        Severity(sev),
+                        f"Found in the memory of {h.name} (PID {h.pid})",
+                        {"processes": [(h.pid, h.name)]},
+                    )
+                    for rule, sev in h.rules
+                ]
+                r = ScanResult(path=h.exe or h.name, detections=dets, action="reported", origin="memory")
+                out.results.append(r)
+                t.item(r)
+            out.finished = time.time()
+            return out
+
+        self._start("Scanning program memory…", work)
 
     def process_scan(self) -> None:
         sc = self.s.scanner

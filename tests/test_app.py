@@ -79,6 +79,10 @@ def test_gui_builds_every_page(sentinel):
     for key, _label, _cls in NAV:
         win.navigate(key)
         app.processEvents()
+    from PySide6.QtCore import QThreadPool
+
+    QThreadPool.globalInstance().waitForDone(180000)  # background work (e.g. the checkup) finishes first
+    app.processEvents()
     win._quitting = True
     win.stop_timers()
     win.tray.hide()

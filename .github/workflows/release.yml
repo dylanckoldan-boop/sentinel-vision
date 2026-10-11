@@ -168,6 +168,13 @@ jobs:
           if (Test-Path $log) { Get-Content $log -Tail 40 }
           if (Test-Path $log) { Assert (-not (Select-String -Path $log -Pattern 'Traceback' -Quiet)) "no Python tracebacks in the app log" }
 
+          $decoy = Join-Path ([Environment]::GetFolderPath('MyDocuments')) '!Budget 2026.docx'
+          if (Test-Path ([Environment]::GetFolderPath('MyDocuments'))) {
+            Assert (Test-Path -LiteralPath $decoy) "ransomware decoy planted in Documents"
+            $attrs = (Get-Item -LiteralPath $decoy -Force).Attributes
+            Assert (($attrs -band [IO.FileAttributes]::Hidden) -ne 0) "decoy is hidden"
+          }
+
           Write-Host "== upgrade over the running app (installer must close it)"
           Invoke-Setup $setup @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LOG="install2.log"') "upgrade over running app"
           Start-Sleep -Seconds 3
@@ -195,6 +202,7 @@ jobs:
           Assert (-not ($userPath -like "*$app*")) "PATH entry removed"
           Assert ($null -eq (Get-Process SentinelVision -ErrorAction SilentlyContinue)) "no app process left running"
           Assert (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Sentinel Vision.lnk")) "Start menu shortcut removed"
+          Assert (-not (Test-Path -LiteralPath $decoy)) "ransomware decoys removed by the uninstaller"
           Write-Host "Windows installer lifecycle: ALL CHECKS PASSED"
           Write-Host "::notice title=Windows installer test::Install, CLI, GUI, upgrade, relaunch, option change and uninstall all passed"
           } catch {
@@ -314,6 +322,22 @@ jobs:
             echo "shows *Windows protected your PC* — click **More info → Run anyway**. See the README for details."
           } >> notes.md
           cat notes.md
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Post-quantum signature (ML-DSA-65 + Ed25519)
+        env:
+          SV_SIGNING_KEY: ${{ secrets.SV_SIGNING_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$SV_SIGNING_KEY" ]]; then
+            echo "::warning title=Release not signed::Add the SV_SIGNING_KEY repository secret (docs/CODE_SIGNING.md). Apps will not auto-install an unsigned release."
+            exit 0
+          fi
+          python -m pip install --quiet "cryptography>=50"
+          python tools/pq_sign.py artifacts/SHA256SUMS.txt
+          echo "::notice title=Release signed::SHA256SUMS.txt signed with ML-DSA-65 + Ed25519"
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ env.VERSION }}
@@ -322,5 +346,4 @@ jobs:
           body_path: notes.md
           files: |
             artifacts/SentinelVision-*
-            artifacts/SHA256SUMS.txt
-          fail_on_unmatched_files: true
+            artifacts/SHA256SUMS.txt*

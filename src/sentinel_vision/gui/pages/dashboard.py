@@ -85,6 +85,13 @@ class DashboardPage(Page):
         threats_24h = s.db.detection_count(time.time() - 86400)
         last = s.updater.last_update
         net = s.network.snapshot()
+        recent = [i for i in s.ransomware.incidents if time.time() - i.ts < 86400]
+        if recent:
+            return (
+                "danger",
+                "Ransomware activity was stopped",
+                "Open the Ransomware page to remove the program and restore your files.",
+            )
         if not s.settings.realtime_enabled or not s.realtime.running:
             return (
                 "danger",
@@ -105,6 +112,13 @@ class DashboardPage(Page):
             )
         if time.time() - last > 7 * 86400:
             return "warn", "Definitions are out of date", f"Last update: {ago(last)}. Click “Update definitions”."
+        rw_off = not s.settings.ransomware_enabled or (s.settings.ransomware_folders and not s.ransomware.running)
+        if rw_off:
+            return (
+                "warn",
+                "Ransomware shield is off",
+                "Your documents have no decoys or rollback vault. Turn it on in Protection.",
+            )
         if not s.settings.behavior_enabled or not s.behavior.running:
             return "warn", "Behavior monitoring is off", "New programs and auto-start changes are not being checked."
         if not autostart.is_enabled():

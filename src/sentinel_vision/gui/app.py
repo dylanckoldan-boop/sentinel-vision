@@ -30,13 +30,17 @@ from sentinel_vision import APP_NAME, __version__, app_update, autostart
 from sentinel_vision.core import Sentinel, setup_logging
 from sentinel_vision.gui import theme
 from sentinel_vision.gui.pages import (
+    CheckupPage,
     DashboardPage,
     HistoryPage,
     NetworkPage,
     ProtectionPage,
     QuarantinePage,
+    RansomwarePage,
     ScanPage,
     SettingsPage,
+    ToolsPage,
+    WebShieldPage,
 )
 from sentinel_vision.gui.pages.base import AppContext
 from sentinel_vision.gui.widgets import app_icon
@@ -48,7 +52,11 @@ NAV = [
     ("overview", "◉  Overview", DashboardPage),
     ("scan", "⌕  Scan", ScanPage),
     ("protection", "⛨  Protection", ProtectionPage),
+    ("ransomware", "⟲  Ransomware", RansomwarePage),
+    ("webshield", "◎  Web Shield", WebShieldPage),
     ("network", "⇅  Live traffic", NetworkPage),
+    ("checkup", "✓  Checkup", CheckupPage),
+    ("tools", "⚿  Privacy && tools", ToolsPage),
     ("quarantine", "⊘  Quarantine", QuarantinePage),
     ("history", "☰  History", HistoryPage),
     ("settings", "⚙  Settings", SettingsPage),
@@ -169,6 +177,10 @@ class MainWindow(QMainWindow):
         sentinel.realtime.on_result = self.bridge.realtime_result.emit
         sentinel.network.add_listener(self.bridge.network_alert.emit)
         sentinel.behavior.add_listener(self.bridge.behavior_alert.emit)
+        sentinel.ransomware.add_listener(self.bridge.ransomware_alert.emit)
+        sentinel.alert_listeners.append(lambda title, text, level: self.bridge.generic_alert.emit(title, text, level))
+        self.bridge.ransomware_alert.connect(self._on_ransomware)
+        self.bridge.generic_alert.connect(self.notify)
         self.bridge.realtime_result.connect(self._on_realtime)
         self.bridge.network_alert.connect(self._on_network_alert)
         self.bridge.behavior_alert.connect(self._on_behavior_alert)
@@ -183,6 +195,9 @@ class MainWindow(QMainWindow):
         self.update_timer.timeout.connect(self._auto_update)
         self.update_timer.start(30 * 60 * 1000)
         self._first_defs_check = self._one_shot(4000, self._auto_update)
+        self.schedule_timer = QTimer(self)
+        self.schedule_timer.timeout.connect(self._scheduled)
+        self.schedule_timer.start(60_000)
         self.app_update_timer = QTimer(self)
         self.app_update_timer.timeout.connect(self.check_app_update)
         self.app_update_timer.start(APP_UPDATE_INTERVAL_MS)
@@ -376,6 +391,8 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ alerts
     def notify(self, title: str, text: str, level: str = "info") -> None:
+        if self.sentinel.settings.quiet_mode and level != "danger":
+            return
         icon = {"danger": QSystemTrayIcon.Critical, "info": QSystemTrayIcon.Information}.get(
             level, QSystemTrayIcon.Warning
         )
@@ -396,6 +413,34 @@ class MainWindow(QMainWindow):
             "Suspicious connection",
             f"{conn.process or 'Unknown'} (PID {conn.pid}) → {conn.remote}\n{conn.threat}",
             "danger" if conn.severity >= 3 else "warning",
+        )
+
+    def _scheduled(self) -> None:
+        if not self._quitting:
+            started = self.sentinel.run_due_scans()
+            if started:
+                self.notify("Scheduled scan", f"A scheduled {started[0]} scan started in the background.", "info")
+
+    def _on_ransomware(self, inc) -> None:
+        frozen = [f"{s.name} (PID {s.pid})" for s in inc.suspects if s.state == "suspended"]
+        self.notify("RANSOMWARE BLOCKED" if frozen else "Ransomware alert", inc.detail, "danger")
+        self.show_normal()
+        self.navigate("ransomware")
+        page = self.pages["ransomware"]
+        page.refresh()
+        if page.inc_model.rowCount():
+            page.inc_table.selectRow(0)
+        QMessageBox.critical(
+            self,
+            "Ransomware activity detected",
+            f"{inc.detail}\n\n"
+            + (
+                f"Frozen: {', '.join(frozen)}.\n\nChoose “End & quarantine” to remove it, or “Resume” if you are "
+                "sure it is safe. Then restore your files from the rollback vault."
+                if frozen
+                else "No program could be identified automatically. Disconnect from the network, then check the "
+                "Ransomware page and restore your files from the rollback vault."
+            ),
         )
 
     def _on_behavior_alert(self, ev) -> None:

@@ -5,7 +5,7 @@
 - [macOS](#macos)
 - [Linux](#linux)
 - [Any OS — from source with Python](#any-os--from-source-with-python)
-- [After installing: three steps for full protection](#after-installing-three-steps-for-full-protection)
+- [After installing: steps for full protection](#after-installing-steps-for-full-protection)
 - [Updating](#updating)
 - [Uninstalling](#uninstalling)
 - [Troubleshooting](#troubleshooting)
@@ -28,7 +28,7 @@ Requires Windows 10 or 11 (64-bit). No administrator rights needed.
    ticked — protection only runs while the app runs.
    Optional: *Create a desktop shortcut* and *Add the sentinel-vision-cli command-line tool to PATH*.
 6. Click **Install**, then **Finish** with *Launch Sentinel Vision now* ticked.
-7. Continue with [the three steps for full protection](#after-installing-three-steps-for-full-protection).
+7. Continue with [the steps for full protection](#after-installing-steps-for-full-protection).
 
 From now on Sentinel Vision starts by itself at sign-in and lives in the system tray (bottom-right, near the clock —
 click the **^** arrow if it is hidden). Click the shield icon to open it; right-click for the menu.
@@ -95,17 +95,23 @@ PATH"** in the installer).
 
 4. Accept the first-run prompt to start at sign-in. It remembers this exact environment, so keep the folder where it is.
 
-## After installing: three steps for full protection
+## After installing: steps for full protection
 
 1. **Download the threat definitions**: open **Settings & updates → Update now**. (This also runs automatically every
-   6 hours.) Without it only the built-in rules are active.
-2. **Add ClamAV** (strongly recommended — millions of extra signatures). Sentinel Vision uses it automatically:
+   6 hours.) It downloads YARA rules, botnet/criminal IP lists and 500,000+ malware and phishing websites.
+2. **Run the Security checkup** (sidebar → Checkup) and fix anything marked *At risk*.
+3. **Turn on system-wide website blocking**: Web Shield → **Turn on / refresh blocking** (asks for administrator
+   permission once). Every browser and app is then kept away from known malware and phishing sites.
+4. **Check the Ransomware page**: Documents, Desktop and Pictures are protected by default; add other important
+   folders in Settings → *Ransomware-protected folders*.
+5. **Add ClamAV** (strongly recommended — millions of extra signatures). Sentinel Vision uses it automatically:
    - Windows: install from [clamav.net/downloads](https://www.clamav.net/downloads), then run `freshclam` once.
    - macOS: `brew install clamav`, copy `freshclam.conf.sample` to `freshclam.conf`, delete the `Example` line, run `freshclam`.
    - Ubuntu/Debian: `sudo apt install clamav clamav-daemon && sudo systemctl enable --now clamav-daemon`
    - Fedora: `sudo dnf install clamav clamd clamav-update && sudo freshclam`
-3. **Optional — MalwareBazaar hashes**: get a free Auth-Key at [auth.abuse.ch](https://auth.abuse.ch/), paste it into
-   **Settings → abuse.ch Auth-Key**, click **Save settings**, then **Update now**.
+6. **Optional — MalwareBazaar**: get a free Auth-Key at [auth.abuse.ch](https://auth.abuse.ch/), paste it into
+   **Settings → abuse.ch Auth-Key**, and tick **Cloud hash reputation** to catch malware published minutes ago
+   (only file fingerprints are sent, never files).
 
 Keep Microsoft Defender / XProtect turned on as well: Sentinel Vision is designed to complement them.
 
@@ -128,7 +134,13 @@ Keep Microsoft Defender / XProtect turned on as well: Sentinel Vision is designe
 
 ## Verifying a download
 
-Every release has a `SHA256SUMS.txt`. Compare it with the file you downloaded:
+Every release has a `SHA256SUMS.txt` and its post-quantum signature `SHA256SUMS.txt.sig`.
+
+**Strongest check** (if you already have Sentinel Vision or the source code): put both files in the folder with your
+download and run `sentinel-vision-cli verify-release .` — it verifies the ML-DSA-65 + Ed25519 signature and every
+file's SHA-256.
+
+**Quick check** — compare the SHA-256 with `SHA256SUMS.txt`:
 
 - Windows (PowerShell): `Get-FileHash .\SentinelVision-<version>-Setup.exe -Algorithm SHA256`
 - macOS: `shasum -a 256 SentinelVision-<version>-macos.zip`

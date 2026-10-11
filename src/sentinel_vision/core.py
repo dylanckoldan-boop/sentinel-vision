@@ -3,17 +3,26 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
+from collections.abc import Callable
 from logging.handlers import RotatingFileHandler
 
+from sentinel_vision.advisor import NetGuard
 from sentinel_vision.behavior import BehaviorMonitor
 from sentinel_vision.config import Settings, sub_dir
 from sentinel_vision.db import Database
+from sentinel_vision.devices import DriveWatcher, PrivacyMonitor, due_scans
 from sentinel_vision.network.monitor import NetworkMonitor
 from sentinel_vision.network.threatintel import IntelStore
 from sentinel_vision.quarantine import Quarantine
+from sentinel_vision.ransomware import RansomwareShield
 from sentinel_vision.realtime import RealtimeProtection
-from sentinel_vision.scanner import Scanner
+from sentinel_vision.reputation import ReputationService
+from sentinel_vision.scanner import Scanner, ScanSummary
 from sentinel_vision.updater import Updater
+from sentinel_vision.vault import RollbackVault
+from sentinel_vision.webshield import DomainIntel
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -28,25 +37,52 @@ def setup_logging(verbose: bool = False) -> None:
     root.addHandler(fh)
 
 
+Alert = Callable[[str, str, str], None]  # (title, text, level: info | warning | danger)
+
+
 class Sentinel:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or Settings.load()
+        s = self.settings
         self.db = Database()
         self.quarantine = Quarantine()
-        self.scanner = Scanner(self.settings, self.db, self.quarantine)
+        self.scanner = Scanner(s, self.db, self.quarantine)
+        self.reputation = ReputationService(s, self.db)
+        self.scanner.reputation = self.reputation
         self.intel = IntelStore()
-        self.network = NetworkMonitor(self.settings, self.intel, self.db)
+        self.domains = DomainIntel()
+        self.network = NetworkMonitor(s, self.intel, self.db)
         self.realtime = RealtimeProtection(self.scanner)
-        self.updater = Updater(self.settings, self.db, self.intel)
-        self.behavior = BehaviorMonitor(self.scanner, self.settings)
+        self.updater = Updater(s, self.db, self.intel, self.domains)
+        self.behavior = BehaviorMonitor(self.scanner, s)
+        self.vault = RollbackVault(max_total_mb=s.vault_max_mb, keep_versions=s.vault_keep_versions)
+        self.ransomware = RansomwareShield(s, self.db, self.vault)
+        self.drives = DriveWatcher(self._on_drive)
+        self.privacy = PrivacyMonitor(self._on_device_use)
+        self.netguard = NetGuard(self.db, self.intel, lambda text, level: self.alert("Network warning", text, level))
+        self.alert_listeners: list[Alert] = []
+        self._scheduled_lock = threading.Lock()
+        self.scheduled_running = ""
         self._engine_key = self._current_engine_key()
         self._watch_key: tuple | None = None
+        self._rw_key: tuple | None = None
+
+    # ------------------------------------------------------------------ alerts
+    def alert(self, title: str, text: str, level: str = "info") -> None:
+        if self.settings.quiet_mode and level == "info":
+            return
+        for fn in list(self.alert_listeners):
+            try:
+                fn(title, text, level)
+            except Exception:
+                logging.getLogger(__name__).exception("alert listener failed")
 
     def _current_engine_key(self) -> tuple:
         s = self.settings
         return (s.hash_enabled, s.yara_enabled, s.clamav_enabled, s.heuristics_enabled, s.heuristic_threshold,
                 s.clamd_address)  # fmt: skip
 
+    # ------------------------------------------------------------------ lifecycle
     def start_protection(self) -> None:
         """Start every background protection the settings ask for (idempotent)."""
         s = self.settings
@@ -57,14 +93,27 @@ class Sentinel:
         else:
             self.realtime.stop()
         self._watch_key = watch_key
-        if s.network_enabled:
-            self.network.start()
+        for enabled, sub in (
+            (s.network_enabled, self.network),
+            (s.behavior_enabled, self.behavior),
+            (s.usb_autoscan, self.drives),
+            (s.privacy_monitor, self.privacy),
+            (s.netsec_enabled, self.netguard),
+        ):
+            if enabled:
+                sub.start()
+            else:
+                sub.stop()
+        rw_key = (s.ransomware_enabled, tuple(s.ransomware_folders))
+        if s.ransomware_enabled:
+            if rw_key != self._rw_key or not self.ransomware.running:
+                self.ransomware.start(s.ransomware_folders)
         else:
-            self.network.stop()
-        if s.behavior_enabled:
-            self.behavior.start()
-        else:
-            self.behavior.stop()
+            was_on = self._rw_key is not None and self._rw_key[0]
+            self.ransomware.stop()
+            if was_on:  # switched off by the user: don't leave hidden decoys behind
+                RansomwareShield.cleanup_decoys(list(self._rw_key[1]))
+        self._rw_key = rw_key
 
     def apply_settings(self) -> None:
         """Persist settings and re-apply them to running subsystems after the user changes them."""
@@ -73,13 +122,80 @@ class Sentinel:
         if key != self._engine_key:  # rebuilding compiles every YARA rule, so only do it when needed
             self.scanner.build_engines()
             self._engine_key = key
+        self.vault.max_total = self.settings.vault_max_mb * 1024 * 1024
         self.start_protection()
 
     def after_update(self) -> None:
         self.scanner.reload_signatures()
 
     def shutdown(self) -> None:
-        self.behavior.stop()
-        self.realtime.stop()
-        self.network.stop()
+        for sub in (
+            self.ransomware,
+            self.netguard,
+            self.privacy,
+            self.drives,
+            self.behavior,
+            self.realtime,
+            self.network,
+        ):
+            try:
+                sub.stop()
+            except Exception:
+                logging.getLogger(__name__).exception("stopping %s failed", type(sub).__name__)
+        self.vault.close()
+        self.domains.close()
         self.db.close()
+
+    # ------------------------------------------------------------------ devices & schedules
+    def scan_drive(self, mountpoint: str) -> ScanSummary:
+        self.db.log_event("usb", f"Scanning new drive {mountpoint}")
+        summary = self.scanner.scan_paths([mountpoint], origin="usb", max_files=50000)
+        level = "danger" if summary.infected else "info"
+        self.alert(
+            "Drive scanned",
+            f"{mountpoint}: {summary.scanned:,} files, {summary.infected} threat(s)"
+            + (" — removed to quarantine" if summary.infected else ""),
+            level,
+        )
+        return summary
+
+    def _on_drive(self, mountpoint: str) -> None:
+        threading.Thread(target=self.scan_drive, args=(mountpoint,), name="usb-scan", daemon=True).start()
+
+    def _on_device_use(self, use) -> None:
+        kind = "camera" if use.kind == "camera" else "microphone"
+        self.db.log_event("privacy", f"{use.app} started using the {kind}")
+        self.alert(f"{kind.capitalize()} in use", f"{use.app} is using your {kind}.", "warning")
+
+    def run_due_scans(self) -> list[str]:
+        """Run scheduled scans that are due (in the background). Returns the kinds started."""
+        last_q = float(self.db.get_meta("last_sched_quick", "0") or 0)
+        last_f = float(self.db.get_meta("last_sched_full", "0") or 0)
+        due = due_scans(self.settings, last_q, last_f)
+        if not due or not self._scheduled_lock.acquire(blocking=False):
+            return []
+        kind = due[0]
+
+        def work() -> None:
+            try:
+                self.scheduled_running = kind
+                now = str(time.time())
+                self.db.set_meta("last_sched_full" if kind == "full" else "last_sched_quick", now)
+                if kind == "full":
+                    self.db.set_meta("last_sched_quick", now)
+                roots = self.scanner.full_scan_roots() if kind == "full" else self.scanner.quick_scan_roots()
+                summary = self.scanner.scan_paths(roots, origin="scheduled")
+                if kind == "quick":
+                    proc = self.scanner.scan_processes()
+                    summary.infected += proc.infected
+                self.alert(
+                    f"Scheduled {kind} scan finished",
+                    f"{summary.scanned:,} files checked, {summary.infected} threat(s) found",
+                    "danger" if summary.infected else "info",
+                )
+            finally:
+                self.scheduled_running = ""
+                self._scheduled_lock.release()
+
+        threading.Thread(target=work, name=f"scheduled-{kind}", daemon=True).start()
+        return [kind]

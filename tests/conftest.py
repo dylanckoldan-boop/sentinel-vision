@@ -37,6 +37,14 @@ def sentinel():
     s.realtime_enabled = False
     s.network_enabled = False
     s.feeds = []
+    # never touch the real user's folders or devices from tests
+    s.ransomware_enabled = False
+    s.ransomware_folders = []
+    s.usb_autoscan = False
+    s.privacy_monitor = False
+    s.netsec_enabled = False
+    s.behavior_enabled = False
+    s.watch_paths = []
     sv = Sentinel(s)
     yield sv
     sv.shutdown()

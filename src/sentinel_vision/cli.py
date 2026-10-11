@@ -9,6 +9,12 @@
     sentinel-vision-cli status
     sentinel-vision-cli autostart [on|off|status]
     sentinel-vision-cli check-update
+    sentinel-vision-cli checkup [--json]          # security checkup with score
+    sentinel-vision-cli memscan                   # fileless-malware memory scan
+    sentinel-vision-cli rollback list | versions FILE | restore ID | since "YYYY-MM-DD HH:MM" [--folder DIR]
+    sentinel-vision-cli webshield status | check URL | enable | refresh | disable
+    sentinel-vision-cli password-check            # k-anonymity breach check
+    sentinel-vision-cli shred PATH... [--yes]
 
 Exit codes: 0 clean, 1 threats found, 2 error.
 """
@@ -184,10 +190,23 @@ def cmd_daemon(sv: Sentinel, _args) -> int:
     )
     for e in sv.realtime.errors:
         print(_c(YEL, e))
+    sv.ransomware.add_listener(
+        lambda inc: print(
+            _c(
+                RED,
+                f"[RANSOMWARE] {inc.detail}; suspended: "
+                f"{', '.join(f'{s.name} ({s.pid})' for s in inc.suspects if s.state == 'suspended') or 'none'}",
+            )
+        )
+    )
+    sv.alert_listeners.append(
+        lambda title, text, level: print(_c(RED if level == "danger" else YEL, f"[{title}] {text}"))
+    )
     while not stop.wait(60):
         if sv.updater.due():
             sv.updater.run()
             sv.after_update()
+        sv.run_due_scans()
     sv.shutdown()
     return 0
 
@@ -214,6 +233,226 @@ def cmd_check_update(_sv: Sentinel, _args) -> int:
         return 0
     print(f"Sentinel Vision {info.version} is available (installed: {__version__}).")
     print(f"  {info.page_url}")
+    return 0
+
+
+def cmd_checkup(sv: Sentinel, args) -> int:
+    from sentinel_vision import advisor
+
+    checks = advisor.run_checkup(sv, None if args.json else (lambda m: print(_c(DIM, m))))
+    if args.json:
+        print(json.dumps({"score": advisor.score(checks), "checks": [c.__dict__ for c in checks]}, indent=2))
+        return 0
+    marks = {"pass": (GRN, "✓"), "warn": (YEL, "!"), "fail": (RED, "✗"), "unknown": (DIM, "?"), "info": (DIM, "i")}
+    for c in checks:
+        color, mark = marks.get(c.status, (DIM, "?"))
+        print(f"{_c(color, mark)} {c.title}: {c.detail}")
+        if c.status in ("warn", "fail") and c.fix:
+            print(_c(DIM, f"    fix: {c.fix}"))
+    sc = advisor.score(checks)
+    print(_c(GRN if sc >= 80 else YEL if sc >= 50 else RED, f"\nSecurity score: {sc}/100"))
+    return 0
+
+
+def cmd_memscan(sv: Sentinel, _args) -> int:
+    from sentinel_vision import memscan
+
+    summary = memscan.scan_processes(sv.scanner)
+    for h in summary.hits:
+        print(_c(RED, f"[MEMORY] {h.name} (PID {h.pid}) {h.exe}"))
+        for rule, _sev in h.rules:
+            print(f"         {rule}")
+    print(
+        f"{summary.scanned} processes scanned, {len(summary.hits)} with findings, {summary.denied} not accessible "
+        f"(run as administrator to include them), {summary.skipped} skipped, {summary.duration:.0f}s"
+    )
+    return 1 if summary.hits else 0
+
+
+def cmd_rollback(sv: Sentinel, args) -> int:
+    v = sv.vault
+    if args.action == "list":
+        files, versions, used = v.stats()
+        for path, n, ts in v.files(200):
+            print(f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(ts))}  {n:>3} version(s)  {path}")
+        print(_c(DIM, f"{files} files, {versions} versions, {bytes_human(used)} stored"))
+        return 0
+    if args.action == "versions":
+        for ver in v.versions(args.target):
+            flag = "  (looked encrypted)" if ver.suspect else ""
+            when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ver.ts))
+            print(f"{ver.id:>7}  {when}  {bytes_human(ver.size)}{flag}")
+        return 0
+    if args.action == "restore":
+        print(f"Restored to {v.restore(int(args.target), args.to)}")
+        return 0
+    since = time.mktime(time.strptime(args.target, "%Y-%m-%d %H:%M"))
+    results = v.rollback(since, args.folder)
+    for path, result in results:
+        print(f"{_c(GRN if result == 'restored' else YEL, result):<20} {path}")
+    print(f"{sum(r == 'restored' for _, r in results)} file(s) restored")
+    return 0
+
+
+def cmd_webshield(sv: Sentinel, args) -> int:
+    from sentinel_vision import webshield
+
+    if args.action == "check":
+        if not args.url:
+            print("usage: webshield check URL", file=sys.stderr)
+            return 2
+        verdict = webshield.check_url(args.url, sv.domains)
+        color = {"dangerous": RED, "suspicious": RED, "caution": YEL}.get(verdict.verdict, GRN)
+        print(_c(color, f"{verdict.verdict.upper()} ({verdict.score}/100)  {verdict.host}"))
+        for r in verdict.reasons:
+            print(f"  - {r}")
+        return 1 if verdict.verdict in ("dangerous", "suspicious") else 0
+    if args.action == "status":
+        print(f"Known malicious/phishing domains: {sv.domains.count():,}")
+        print(f"System-wide blocking: {webshield.hosts_status():,} domains in {webshield.hosts_path()}")
+        return 0
+    if args.action == "enable":
+        sv.settings.webshield_block_hosts = True
+        sv.settings.save()
+    if args.action == "disable":
+        sv.settings.webshield_block_hosts = False
+        sv.settings.save()
+    sub = (
+        ["webshield-apply", "--db", str(sv.domains.path)]
+        if args.action in ("enable", "refresh")
+        else ["webshield-remove"]
+    )
+    if _is_admin():
+        return _webshield_privileged(sub)
+    return webshield.run_elevated(sub)
+
+
+def _is_admin() -> bool:
+    from sentinel_vision.network.firewall import is_admin
+
+    return is_admin()
+
+
+def _webshield_privileged(argv: list[str]) -> int:
+    """Runs as administrator/root. Touches nothing but the hosts file (and reads the domain database)."""
+    from pathlib import Path
+
+    from sentinel_vision import webshield
+
+    if argv[0] == "webshield-remove":
+        webshield.remove_hosts()
+        print("Web Shield blocking removed from the hosts file.")
+        return 0
+    db_path = Path(argv[argv.index("--db") + 1])
+    if not db_path.is_file():
+        print(f"domain database not found: {db_path}", file=sys.stderr)
+        return 2
+    intel = webshield.DomainIntel(db_path)
+    try:
+        n = webshield.apply_hosts(intel.hosts_for_blocking())
+    finally:
+        intel.close()
+    print(f"Web Shield blocking active: {n:,} domains.")
+    return 0
+
+
+def cmd_password_check(_sv: Sentinel, _args) -> int:
+    import getpass
+
+    from sentinel_vision.reputation import password_breach_count, password_strength
+
+    pw = getpass.getpass("Password to check (not shown, never sent): ")
+    _score, label = password_strength(pw)
+    count = password_breach_count(pw)
+    if count:
+        print(_c(RED, f"Found in {count:,} known data breaches. Stop using this password everywhere."))
+    else:
+        print(_c(GRN, "Not found in known breaches."))
+    print(f"Estimated strength: {label}")
+    return 1 if count else 0
+
+
+def cmd_shred(_sv: Sentinel, args) -> int:
+    from sentinel_vision.devices import shred
+
+    if not args.yes:
+        answer = input(f"Permanently destroy {len(args.paths)} item(s)? This cannot be undone. Type YES: ")
+        if answer.strip() != "YES":
+            print("Cancelled.")
+            return 2
+    failed = 0
+    for path, result in shred(args.paths):
+        failed += result != "shredded"
+        print(f"{result:<12} {path}")
+    return 1 if failed else 0
+
+
+def cmd_verify_release(_sv: Sentinel, args) -> int:
+    """Verify downloaded release files against the post-quantum signed checksum list."""
+    import hashlib
+    from pathlib import Path
+
+    from sentinel_vision.pqsign import CONTEXT_RELEASE, SignatureError, verify
+    from sentinel_vision.trust import release_keys
+
+    folder = Path(args.folder)
+    sums_path, sig_path = folder / "SHA256SUMS.txt", folder / "SHA256SUMS.txt.sig"
+    if not sums_path.is_file() or not sig_path.is_file():
+        print(
+            "put SHA256SUMS.txt and SHA256SUMS.txt.sig from the release next to the downloaded files", file=sys.stderr
+        )
+        return 2
+    sums = sums_path.read_bytes()
+    try:
+        key = verify(sig_path.read_bytes(), sums, CONTEXT_RELEASE, release_keys())
+    except SignatureError as exc:
+        print(_c(RED, f"SIGNATURE INVALID: {exc}"))
+        return 1
+    print(_c(GRN, f"Signature valid (ML-DSA-65 + Ed25519, key {key.key_id})"))
+    bad = checked = 0
+    for line in sums.decode("utf-8", "replace").splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        digest, name = parts[0].lower(), parts[1].lstrip("*")
+        f = folder / name
+        if not f.is_file():
+            continue
+        h = hashlib.sha256()
+        with open(f, "rb") as fh:
+            while chunk := fh.read(1 << 20):
+                h.update(chunk)
+        ok = h.hexdigest() == digest
+        checked += 1
+        bad += not ok
+        print(f"{_c(GRN, 'OK ') if ok else _c(RED, 'BAD')} {name}")
+    if not checked:
+        print(_c(YEL, "no downloaded release files found in this folder"))
+        return 2
+    return 1 if bad else 0
+
+
+def cmd_uninstall_cleanup(sv: Sentinel, _args) -> int:
+    """Run by the uninstaller: remove hidden decoys, start-at-sign-in, and (with permission) hosts-file blocking."""
+    from sentinel_vision import autostart, webshield
+    from sentinel_vision.ransomware import RansomwareShield
+
+    n = RansomwareShield.cleanup_decoys(sv.settings.ransomware_folders)
+    print(f"Removed {n} decoy file(s).")
+    try:
+        autostart.disable()
+    except Exception as exc:
+        print(f"start at sign-in: {exc}")
+    if webshield.hosts_status():
+        try:
+            code = (
+                _webshield_privileged(["webshield-remove"])
+                if _is_admin()
+                else webshield.run_elevated(["webshield-remove"])
+            )
+            print("Website blocking removed." if code == 0 else "Website blocking could not be removed (permission).")
+        except OSError as exc:
+            print(f"Website blocking could not be removed: {exc}")
     return 0
 
 
@@ -262,6 +501,24 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("autostart", help="start the app automatically at sign-in")
     a.add_argument("state", nargs="?", choices=["on", "off", "status"], default="status")
     sub.add_parser("check-update", help="check GitHub for a newer version of Sentinel Vision")
+    c = sub.add_parser("checkup", help="security checkup of this computer, with a score")
+    c.add_argument("--json", action="store_true")
+    sub.add_parser("memscan", help="scan the memory of running programs for fileless malware")
+    r = sub.add_parser("rollback", help="ransomware rollback vault")
+    r.add_argument("action", choices=["list", "versions", "restore", "since"])
+    r.add_argument("target", nargs="?", help="file path (versions), version id (restore) or 'YYYY-MM-DD HH:MM'")
+    r.add_argument("--to", help="restore into this folder instead of the original location")
+    r.add_argument("--folder", help="with 'since': only files in this folder")
+    w = sub.add_parser("webshield", help="malicious/phishing website protection")
+    w.add_argument("action", choices=["status", "check", "enable", "refresh", "disable"])
+    w.add_argument("url", nargs="?")
+    sub.add_parser("password-check", help="check whether a password appeared in data breaches (k-anonymity)")
+    sub.add_parser("uninstall-cleanup", help=argparse.SUPPRESS)
+    vr = sub.add_parser("verify-release", help="verify downloaded release files (post-quantum signature + SHA-256)")
+    vr.add_argument("folder", nargs="?", default=".")
+    sh = sub.add_parser("shred", help="securely delete files or folders")
+    sh.add_argument("paths", nargs="+")
+    sh.add_argument("--yes", action="store_true", help="don't ask for confirmation")
     return p
 
 
@@ -277,10 +534,21 @@ def _safe_console() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     _safe_console()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in ("webshield-apply", "webshield-remove"):
+        # privileged helper invoked through UAC / pkexec / osascript: no Sentinel instance, hosts file only
+        try:
+            return _webshield_privileged(argv)
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
     args = build_parser().parse_args(argv)
     setup_logging(args.verbose)
     if args.command == "quarantine" and args.action != "list" and not args.id:
         print("quarantine restore/delete needs an ID (see `quarantine list`)", file=sys.stderr)
+        return 2
+    if args.command == "rollback" and args.action != "list" and not args.target:
+        print("rollback versions/restore/since needs a target (see --help)", file=sys.stderr)
         return 2
     try:
         sv = Sentinel()
@@ -295,6 +563,14 @@ def main(argv: list[str] | None = None) -> int:
             "status": cmd_status,
             "autostart": cmd_autostart,
             "check-update": cmd_check_update,
+            "checkup": cmd_checkup,
+            "memscan": cmd_memscan,
+            "rollback": cmd_rollback,
+            "webshield": cmd_webshield,
+            "password-check": cmd_password_check,
+            "shred": cmd_shred,
+            "verify-release": cmd_verify_release,
+            "uninstall-cleanup": cmd_uninstall_cleanup,
         }[args.command]
         return handler(sv, args)
     except KeyboardInterrupt:

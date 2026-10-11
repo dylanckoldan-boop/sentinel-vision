@@ -3,6 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -145,6 +146,44 @@ class SettingsPage(Page):
         nf.addRow("Suspicious ports", self.ports)
         lay.addWidget(net)
 
+        prot = QGroupBox("Scheduled scans, ransomware vault & cloud")
+        pf = QFormLayout(prot)
+        self.sched_quick = QCheckBox("Quick scan every day")
+        self.sched_quick.setChecked(st.schedule_quick_daily)
+        self.sched_full = QCheckBox("Full scan every week")
+        self.sched_full.setChecked(st.schedule_full_weekly)
+        pf.addRow(self.sched_quick)
+        pf.addRow(self.sched_full)
+        self.sched_hour = QSpinBox()
+        self.sched_hour.setRange(0, 23)
+        self.sched_hour.setSuffix(":00")
+        self.sched_hour.setValue(st.schedule_hour)
+        pf.addRow("Scan time", self.sched_hour)
+        self.sched_day = QComboBox()
+        self.sched_day.addItems(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"])
+        self.sched_day.setCurrentIndex(st.schedule_full_weekday)
+        pf.addRow("Full scan day", self.sched_day)
+        self.rw_folders = QPlainTextEdit("\n".join(st.ransomware_folders))
+        self.rw_folders.setPlaceholderText("One folder per line")
+        self.rw_folders.setMaximumHeight(90)
+        pf.addRow("Ransomware-protected folders", self.rw_folders)
+        self.vault_mb = QSpinBox()
+        self.vault_mb.setRange(256, 512000)
+        self.vault_mb.setSingleStep(1024)
+        self.vault_mb.setSuffix(" MB")
+        self.vault_mb.setValue(st.vault_max_mb)
+        pf.addRow("Rollback vault size limit", self.vault_mb)
+        self.rw_suspend = QCheckBox("Freeze likely culprits when ransomware activity is detected")
+        self.rw_suspend.setChecked(st.ransomware_auto_suspend)
+        pf.addRow(self.rw_suspend)
+        self.cloud = QCheckBox("Cloud hash reputation (sends SHA-256 fingerprints of new programs, never files)")
+        self.cloud.setChecked(st.cloud_lookup)
+        pf.addRow(self.cloud)
+        self.quiet = QCheckBox("Quiet mode: only show notifications for threats (gaming, presentations)")
+        self.quiet.setChecked(st.quiet_mode)
+        pf.addRow(self.quiet)
+        lay.addWidget(prot)
+
         ui = QGroupBox("Application")
         uf = QFormLayout(ui)
         self.tray = QCheckBox("Keep protecting in the system tray when the window is closed")
@@ -192,6 +231,15 @@ class SettingsPage(Page):
 
     def _collect(self) -> None:
         st = self.s.settings
+        st.schedule_quick_daily = self.sched_quick.isChecked()
+        st.schedule_full_weekly = self.sched_full.isChecked()
+        st.schedule_hour = self.sched_hour.value()
+        st.schedule_full_weekday = self.sched_day.currentIndex()
+        st.ransomware_folders = [ln.strip() for ln in self.rw_folders.toPlainText().splitlines() if ln.strip()]
+        st.vault_max_mb = self.vault_mb.value()
+        st.ransomware_auto_suspend = self.rw_suspend.isChecked()
+        st.cloud_lookup = self.cloud.isChecked()
+        st.quiet_mode = self.quiet.isChecked()
         st.abusech_auth_key = self.key.text().strip()
         st.auto_update_hours = self.auto_hours.value()
         st.run_freshclam = self.freshclam.isChecked()

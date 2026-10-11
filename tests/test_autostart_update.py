@@ -102,26 +102,81 @@ def test_parse_release_and_check(monkeypatch):
     assert app_update.check_latest() is None
 
 
-def test_installer_hash_is_enforced(monkeypatch):
-    info = app_update.parse_release(RELEASE)
-    payload = b"MZ fake installer"
-    good = hashlib.sha256(payload).hexdigest()
-    monkeypatch.setattr(app_update, "can_self_install", lambda _i: True)
+SIGNED_RELEASE = dict(
+    RELEASE,
+    assets=[*RELEASE["assets"], {"name": "SHA256SUMS.txt.sig", "browser_download_url": "https://example.test/sig"}],
+)
 
+
+def _fake_release(monkeypatch, payload: bytes, sums: bytes, sig: bytes | None):
     def fake_download(url, headers=None, limit=0):
         if url.endswith("sums"):
-            return f"{good}  SentinelVision-9.8.7-Setup.exe\n{'0' * 64}  other.zip\n".encode()
+            return sums
+        if url.endswith("sig"):
+            if sig is None:
+                raise AssertionError("signature should not be requested")
+            return sig
         return payload
 
     monkeypatch.setattr(app_update, "download", fake_download)
+    monkeypatch.setattr(app_update, "can_self_install", lambda _i: True)
+
+
+def test_installer_requires_valid_pq_signature_and_hash(monkeypatch):
+    from sentinel_vision import pqsign
+
+    key = pqsign.PrivateKey.generate()
+    monkeypatch.setattr(app_update, "release_keys", lambda: [key.public_key()])
+    info = app_update.parse_release(SIGNED_RELEASE)
+    assert info.signed
+    payload = b"MZ fake installer"
+    sums = f"{hashlib.sha256(payload).hexdigest()}  SentinelVision-9.8.7-Setup.exe\n".encode()
+    good_sig = pqsign.sign(key, sums, pqsign.CONTEXT_RELEASE)
+
+    _fake_release(monkeypatch, payload, sums, good_sig)
     path = app_update.download_installer(info)
     assert path.read_bytes() == payload and path.name == "SentinelVision-9.8.7-Setup.exe"
 
-    def tampered(url, headers=None, limit=0):
-        return fake_download(url) if url.endswith("sums") else payload + b"evil"
+    # tampered installer (hash mismatch)
+    _fake_release(monkeypatch, payload + b"evil", sums, good_sig)
+    with pytest.raises(app_update.AppUpdateError, match="SHA-256"):
+        app_update.download_installer(info)
 
-    monkeypatch.setattr(app_update, "download", tampered)
-    with pytest.raises(app_update.AppUpdateError):
+    # attacker swaps the checksum list too: signature no longer matches
+    evil = b"MZ evil"
+    evil_sums = f"{hashlib.sha256(evil).hexdigest()}  SentinelVision-9.8.7-Setup.exe\n".encode()
+    _fake_release(monkeypatch, evil, evil_sums, good_sig)
+    with pytest.raises(app_update.AppUpdateError, match="signature"):
+        app_update.download_installer(info)
+
+    # signed by a different (unpinned) key
+    rogue = pqsign.sign(pqsign.PrivateKey.generate(), evil_sums, pqsign.CONTEXT_RELEASE)
+    _fake_release(monkeypatch, evil, evil_sums, rogue)
+    with pytest.raises(app_update.AppUpdateError, match="signature"):
+        app_update.download_installer(info)
+
+
+def test_unsigned_release_is_not_auto_installed_once_keys_are_pinned(monkeypatch):
+    from sentinel_vision import pqsign
+
+    monkeypatch.setattr(app_update, "release_keys", lambda: [pqsign.PrivateKey.generate().public_key()])
+    monkeypatch.setattr(app_update, "is_installed_build", lambda: True)
+    monkeypatch.setattr(app_update.sys, "platform", "win32")
+    assert app_update.can_self_install(app_update.parse_release(RELEASE)) is False
+    assert app_update.can_self_install(app_update.parse_release(SIGNED_RELEASE)) is True
+    with pytest.raises(app_update.AppUpdateError, match="not signed"):
+        app_update.verify_checksums(b"x", None)
+
+
+def test_downgrade_is_refused(monkeypatch):
+    old = dict(SIGNED_RELEASE, tag_name="v0.0.1")
+    old["assets"] = [
+        {"name": "SentinelVision-0.0.1-Setup.exe", "browser_download_url": "https://example.test/setup.exe"},
+        *SIGNED_RELEASE["assets"][1:],
+    ]
+    info = app_update.parse_release(old)
+    _fake_release(monkeypatch, b"MZ", b"", b"")
+    with pytest.raises(app_update.AppUpdateError, match="downgrade"):
         app_update.download_installer(info)
 
 

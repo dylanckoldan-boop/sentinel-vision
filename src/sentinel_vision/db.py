@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import sqlite3
 import threading
 import time
@@ -62,12 +63,30 @@ class DetectionRow:
     origin: str
 
 
+def _after_close(default=None):
+    """Background work can finish after shutdown; writes are then dropped and reads return a neutral value
+    instead of raising from a closed connection."""
+
+    def wrap(fn):
+        @functools.wraps(fn)
+        def inner(self, *args, **kwargs):
+            with self._lock:  # same lock as close(): no window between the check and the query
+                if self.closed:
+                    return default() if callable(default) else default
+                return fn(self, *args, **kwargs)
+
+        return inner
+
+    return wrap
+
+
 class Database:
     """Thread-safe wrapper. One connection guarded by a lock keeps things simple and correct."""
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or (data_dir() / "sentinel.db")
         self._lock = threading.RLock()
+        self.closed = False
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False, timeout=30)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
@@ -76,14 +95,17 @@ class Database:
 
     def close(self) -> None:
         with self._lock:
+            self.closed = True
             self._conn.close()
 
     # ------------------------------------------------------------------ meta
+    @_after_close(None)
     def get_meta(self, key: str, default: str | None = None) -> str | None:
         with self._lock:
             row = self._conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return row[0] if row else default
 
+    @_after_close(None)
     def set_meta(self, key: str, value: str) -> None:
         with self._lock:
             self._conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, value))
@@ -99,6 +121,7 @@ class Database:
         return v
 
     # ------------------------------------------------------------------ hashes
+    @_after_close(None)
     def lookup_hashes(self, hashes: Iterable[str]) -> tuple[str, str, str] | None:
         """Return (hash, name, source) for the first hash found in the blocklist."""
         hs = [h.lower() for h in hashes if h]
@@ -110,6 +133,7 @@ class Database:
             row = self._conn.execute(q, hs).fetchone()
         return tuple(row) if row else None  # type: ignore[return-value]
 
+    @_after_close(0)
     def add_hashes(self, rows: Iterable[tuple[str, str]], source: str) -> int:
         now = time.time()
         data = [(h.lower(), name or "Malware.Generic", source, now) for h, name in rows]
@@ -119,11 +143,13 @@ class Database:
             self._conn.commit()
             return self._conn.total_changes - before
 
+    @_after_close(0)
     def hash_count(self) -> int:
         with self._lock:
             return self._conn.execute("SELECT COUNT(*) FROM hashes").fetchone()[0]
 
     # ------------------------------------------------------------------ detections
+    @_after_close(0)
     def add_detection(
         self, path: str, sha256: str | None, engine: str, name: str, severity: int, action: str, origin: str
     ) -> int:
@@ -136,6 +162,7 @@ class Database:
             self._conn.commit()
             return int(cur.lastrowid)
 
+    @_after_close(list)
     def recent_detections(self, limit: int = 500) -> list[DetectionRow]:
         with self._lock:
             rows = self._conn.execute(
@@ -145,18 +172,21 @@ class Database:
             ).fetchall()
         return [DetectionRow(*r) for r in rows]
 
+    @_after_close(0)
     def detection_count(self, since: float = 0) -> int:
         with self._lock:
             return self._conn.execute("SELECT COUNT(DISTINCT path) FROM detections WHERE ts >= ?", (since,)).fetchone()[
                 0
             ]
 
+    @_after_close(None)
     def clear_detections(self) -> None:
         with self._lock:
             self._conn.execute("DELETE FROM detections")
             self._conn.commit()
 
     # ------------------------------------------------------------------ events
+    @_after_close(None)
     def log_event(self, kind: str, message: str, level: str = "info") -> None:
         with self._lock:
             self._conn.execute(
@@ -167,6 +197,7 @@ class Database:
             self._conn.execute("DELETE FROM events WHERE id <= (SELECT MAX(id) - 20000 FROM events)")
             self._conn.commit()
 
+    @_after_close(list)
     def recent_events(self, limit: int = 500) -> list[tuple[float, str, str, str]]:
         with self._lock:
             return self._conn.execute(
@@ -174,6 +205,7 @@ class Database:
             ).fetchall()
 
     # ------------------------------------------------------------------ scan cache
+    @_after_close(None)
     def cache_get(self, path: str, size: int, mtime: float) -> str | None:
         """Return the sha256 of a file that was clean under the current signatures, if unchanged."""
         with self._lock:
@@ -183,6 +215,7 @@ class Database:
             ).fetchone()
         return row[0] if row else None
 
+    @_after_close(None)
     def cache_put(self, path: str, size: int, mtime: float, sha256: str) -> None:
         with self._lock:
             self._conn.execute(
@@ -191,6 +224,7 @@ class Database:
             )
             self._conn.commit()
 
+    @_after_close(None)
     def cache_drop(self, path: str) -> None:
         with self._lock:
             self._conn.execute("DELETE FROM scan_cache WHERE path=?", (path,))

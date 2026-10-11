@@ -1,9 +1,11 @@
 """Application self-update via GitHub Releases.
 
 * Checks ``/releases/latest`` of the official repository (HTTPS, size-limited).
-* On Windows installer builds, downloads the new ``Setup.exe`` and verifies its SHA-256 against the
-  release's ``SHA256SUMS.txt`` before running it. The installer closes the running app, upgrades it in
-  place (settings, quarantine and history are kept) and relaunches it.
+* On Windows installer builds, downloads the new ``Setup.exe`` and verifies it before running it:
+  the release's ``SHA256SUMS.txt`` must carry a valid hybrid post-quantum signature (ML-DSA-65 + Ed25519) from a
+  key pinned in ``trust.py``, and the installer's SHA-256 must match the signed list. The version in the installer
+  name must match the release and be newer than this build (no downgrades). The installer closes the running app,
+  upgrades it in place (settings, quarantine and history are kept) and relaunches it.
 * Everywhere else the user is pointed at the release page.
 """
 
@@ -22,6 +24,8 @@ from pathlib import Path
 
 from sentinel_vision import __version__
 from sentinel_vision.autostart import is_installed_build
+from sentinel_vision.pqsign import CONTEXT_RELEASE, SignatureError, verify
+from sentinel_vision.trust import release_keys
 from sentinel_vision.updater import download
 
 REPO = "dylanckoldan-boop/sentinel-vision"
@@ -42,6 +46,11 @@ class ReleaseInfo:
     installer_url: str = ""
     installer_name: str = ""
     sums_url: str = ""
+    sig_url: str = ""
+
+    @property
+    def signed(self) -> bool:
+        return bool(self.sig_url)
 
 
 def parse_version(v: str) -> tuple[int, ...]:
@@ -74,6 +83,8 @@ def parse_release(payload: dict) -> ReleaseInfo:
             info.installer_url, info.installer_name = url, name
         elif name == "SHA256SUMS.txt":
             info.sums_url = url
+        elif name == "SHA256SUMS.txt.sig":
+            info.sig_url = url
     return info
 
 
@@ -84,6 +95,10 @@ def check_latest() -> ReleaseInfo | None:
     except urllib.error.HTTPError as exc:
         if exc.code == 404:  # no release published yet
             return None
+        if exc.code in (403, 429):
+            raise AppUpdateError(
+                "GitHub is limiting update checks from your network right now; try again later"
+            ) from exc
         raise AppUpdateError(f"GitHub returned HTTP {exc.code}") from exc
     try:
         payload = json.loads(raw.decode("utf-8"))
@@ -96,7 +111,9 @@ def check_latest() -> ReleaseInfo | None:
 
 
 def can_self_install(info: ReleaseInfo) -> bool:
-    return sys.platform == "win32" and is_installed_build() and bool(info.installer_url and info.sums_url)
+    if not (sys.platform == "win32" and is_installed_build() and info.installer_url and info.sums_url):
+        return False
+    return info.signed or not release_keys()  # once keys are pinned, unsigned releases are never auto-installed
 
 
 def expected_hash(sums_text: str, filename: str) -> str:
@@ -107,10 +124,28 @@ def expected_hash(sums_text: str, filename: str) -> str:
     raise AppUpdateError(f"{filename} is not listed in SHA256SUMS.txt")
 
 
+def verify_checksums(sums: bytes, signature: bytes | None) -> str:
+    """Verify the post-quantum signature over a release's SHA256SUMS.txt. Returns the signing key id."""
+    keys = release_keys()
+    if not keys:
+        return ""  # signing not configured in this build
+    if signature is None:
+        raise AppUpdateError("the release is not signed; it can't be installed automatically")
+    try:
+        return verify(signature, sums, CONTEXT_RELEASE, keys).key_id
+    except SignatureError as exc:
+        raise AppUpdateError(f"the release signature is invalid ({exc}); the update was not run") from exc
+
+
 def download_installer(info: ReleaseInfo) -> Path:
     if not can_self_install(info):
         raise AppUpdateError("automatic installation is only available for the Windows installer build")
-    sums = download(info.sums_url, limit=1024 * 1024).decode("utf-8", errors="replace")
+    m = INSTALLER_RE.match(info.installer_name)
+    if not m or m.group(1) != info.version or not is_newer(info.version):
+        raise AppUpdateError("installer version does not match the release (refusing a possible downgrade)")
+    sums_raw = download(info.sums_url, limit=1024 * 1024)
+    verify_checksums(sums_raw, download(info.sig_url, limit=64 * 1024) if info.sig_url else None)
+    sums = sums_raw.decode("utf-8", errors="replace")
     want = expected_hash(sums, info.installer_name)
     data = download(info.installer_url, limit=500 * 1024 * 1024)
     got = hashlib.sha256(data).hexdigest()
