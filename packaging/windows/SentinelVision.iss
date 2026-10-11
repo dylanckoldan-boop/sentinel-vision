@@ -60,7 +60,7 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 ChangesEnvironment=yes
-CloseApplications=no
+CloseApplications=force
 RestartApplications=no
 SetupMutex=SentinelVisionSetupMutex
 
@@ -108,14 +108,27 @@ begin
   Result := WizardSilent() and (ExpandConstant('{param:RELAUNCH|0}') = '1');
 end;
 
-procedure StopRunningApp();
+procedure KillImage(const Image: String);
 var
-  ResultCode: Integer;
+  ResultCode, I: Integer;
+begin
+  { taskkill exits with 128 once no process with that image name is left; keep going until then. }
+  for I := 1 to 40 do
+  begin
+    if not Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM ' + Image, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      exit;
+    if ResultCode = 128 then
+      exit;
+    Sleep(500);
+  end;
+end;
+
+procedure StopRunningApp();
 begin
   { The app keeps running in the tray, so a normal close request would only hide it: end it so files can be replaced. }
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM {#AppExe}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM {#CliExe}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(800);
+  KillImage('{#AppExe}');
+  KillImage('{#CliExe}');
+  Sleep(1000);
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
