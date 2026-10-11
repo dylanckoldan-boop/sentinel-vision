@@ -45,7 +45,7 @@ class ProtectionPage(Page):
         left.addWidget(self.toggle)
         left.addWidget(self.state)
         left.addWidget(self.behavior_toggle)
-        self.rw_toggle = QCheckBox("Ransomware shield & rollback vault")
+        self.rw_toggle = QCheckBox("Ransomware shield && rollback vault")
         self.rw_toggle.setStyleSheet(BIG)
         left.addWidget(self.rw_toggle)
         left.addWidget(self.net_toggle)
@@ -54,6 +54,7 @@ class ProtectionPage(Page):
         self.netsec_toggle = QCheckBox("Watch for router spoofing and DNS hijacking")
         for w in (self.usb_toggle, self.privacy_toggle, self.netsec_toggle):
             left.addWidget(w)
+        left.addStretch(1)
         self.auto_q = QCheckBox("Quarantine signature detections automatically")
         self.kill_mal = QCheckBox("End programs confirmed as malware")
         self.kill_ransom = QCheckBox("Stop ransomware from deleting backups")
@@ -62,6 +63,7 @@ class ProtectionPage(Page):
         right.addWidget(self.auto_q)
         right.addWidget(self.kill_mal)
         right.addWidget(self.kill_ransom)
+        right.addStretch(1)
         cols.addLayout(left, 1)
         cols.addLayout(right, 1)
         sl.addLayout(cols)
@@ -117,7 +119,7 @@ class ProtectionPage(Page):
         self.table = make_table(self.model, stretch_col=3)
         self.table.setColumnWidth(0, 150)
         self.table.setColumnWidth(1, 260)
-        self.table.setColumnWidth(2, 90)
+        self.table.setColumnWidth(2, 110)
         self.root.addWidget(self.table, 1)
 
         self.toggle.toggled.connect(lambda on: self._set("realtime_enabled", on, apply=True))

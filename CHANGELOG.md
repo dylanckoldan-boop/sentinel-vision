@@ -3,6 +3,43 @@
 All notable changes to Sentinel Vision are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-10-11
+
+### Added
+- **Post-quantum signed updates.** Every release's checksum list is signed with a hybrid **ML-DSA-65 (FIPS 204) +
+  Ed25519** signature, and the self-updater refuses any installer that isn't covered by a valid signature from the
+  pinned release key, or that would be a downgrade. Rollback vault and quarantine use AES-256-GCM, which stays secure
+  against quantum computers. See docs/COMPARISON.md → Post-quantum design.
+- **Ransomware shield.** Hidden decoy files and encryption-burst detection (documents that stop being their file
+  type, mass renames) catch ransomware in the act; the most likely culprits are frozen (reversible) so you can end
+  and quarantine them or resume them.
+- **Rollback vault.** Every good version of your documents is kept encrypted and deduplicated; restore single files,
+  or roll back everything changed after a point in time. Content that looks encrypted is never recorded as "good".
+- **Web Shield.** Four free malware/phishing domain feeds (URLhaus, Phishing.Database, Phishing Army, OpenPhish —
+  over 500,000 domains), optional system-wide blocking through the hosts file (all browsers and apps; major platforms
+  are never blocked as a whole), and a local **link checker** that spots look-alike brands, mixed-alphabet
+  homographs, hidden destinations and other phishing tricks.
+- **Security checkup** with a score: firewall, Defender, disk encryption, Windows/macOS/Linux updates, outdated apps
+  (winget), UAC, auto-login, Remote Desktop, SMBv1, Secure Boot, Gatekeeper/SIP, SSH hardening, exposed services,
+  Wi-Fi encryption.
+- **Network attack detection:** router ARP spoofing (man-in-the-middle) and DNS servers on threat lists.
+- **Memory scan** of running programs for fileless malware (report-only).
+- **USB drives are scanned automatically** when connected; **scheduled scans** (daily quick, weekly full, catching
+  up missed runs).
+- **Camera & microphone alerts** when an app starts using them (Windows and Linux).
+- **Password breach check** with k-anonymity (the password never leaves the device) and a **file shredder**.
+- **Opt-in cloud hash reputation** (MalwareBazaar, CIRCL hashlookup): catches malware published minutes ago and clears
+  heuristic alerts on catalogued software. Only SHA-256 fingerprints are sent, never files.
+- **Quiet mode** for games and presentations (threat alerts still show).
+- New pages: Ransomware, Web Shield, Checkup, Privacy & tools. New CLI commands: `checkup`, `memscan`, `rollback`,
+  `webshield`, `password-check`, `shred`.
+- Weekly **integration tests** against every live threat feed and service on Windows, macOS and Linux.
+- docs/COMPARISON.md: source-backed comparison with Norton 360 and McAfee+.
+
+### Changed
+- The database tolerates background work that finishes after shutdown.
+- Feeds added in new versions now appear for people upgrading with saved settings.
+
 ## [0.2.1] - 2026-10-09
 
 ### Fixed
@@ -81,6 +118,7 @@ Source-only release (no downloadable builds).
 - First release: hash, YARA, ClamAV and heuristic engines; real-time protection; encrypted quarantine; live traffic
   monitor with threat intelligence; threat-feed updater; PySide6 GUI; CLI and daemon; CI on Windows, macOS and Linux.
 
+[0.3.0]: https://github.com/dylanckoldan-boop/sentinel-vision/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/dylanckoldan-boop/sentinel-vision/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/dylanckoldan-boop/sentinel-vision/releases/tag/v0.2.0
 [0.1.0]: https://github.com/dylanckoldan-boop/sentinel-vision/commit/d633c7e

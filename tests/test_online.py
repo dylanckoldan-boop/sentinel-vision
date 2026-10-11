@@ -47,5 +47,10 @@ def test_circl_hashlookup_reachable(sentinel):
 def test_github_release_check_and_signature_policy():
     from sentinel_vision import app_update
 
-    info = app_update.check_latest()
+    try:
+        info = app_update.check_latest()
+    except app_update.AppUpdateError as exc:
+        if "limiting" in str(exc):
+            pytest.skip("GitHub API rate limit on shared CI runners")
+        raise
     assert info is None or info.version

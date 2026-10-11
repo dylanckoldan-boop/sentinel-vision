@@ -249,6 +249,22 @@ class RansomwareShield:
                 except OSError as exc:
                     log.info("cannot place decoy %s: %s", path, exc)
 
+    @staticmethod
+    def cleanup_decoys(folders: list[str]) -> int:
+        """Remove our decoy files from ``folders`` (only files whose content is exactly our decoy)."""
+        n = 0
+        for folder in folders:
+            for name in CANARY_NAMES:
+                path = Path(folder) / name
+                try:
+                    if path.is_file() and path.read_bytes() == _decoy_bytes(name):
+                        _unhide(path)
+                        path.unlink()
+                        n += 1
+                except OSError:
+                    continue
+        return n
+
     def remove_canaries(self) -> int:
         n = 0
         for p in list(self.canaries):

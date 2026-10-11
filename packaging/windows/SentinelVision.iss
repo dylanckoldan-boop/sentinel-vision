@@ -91,6 +91,10 @@ Root: HKA; Subkey: "{#RunKey}"; ValueType: string; ValueName: "{#RunValue}"; Val
 Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName} now"; Flags: nowait postinstall skipifsilent runasoriginaluser
 Filename: "{app}\{#AppExe}"; Flags: nowait runasoriginaluser; Check: RelaunchRequested
 
+[UninstallRun]
+; remove hidden ransomware decoys, start-at-sign-in and (asking for permission) hosts-file blocking
+Filename: "{app}\{#CliExe}"; Parameters: "uninstall-cleanup"; Flags: runhidden waituntilterminated; RunOnceId: "SVCleanup"
+
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\_internal"
 

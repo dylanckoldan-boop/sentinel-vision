@@ -95,6 +95,10 @@ def check_latest() -> ReleaseInfo | None:
     except urllib.error.HTTPError as exc:
         if exc.code == 404:  # no release published yet
             return None
+        if exc.code in (403, 429):
+            raise AppUpdateError(
+                "GitHub is limiting update checks from your network right now; try again later"
+            ) from exc
         raise AppUpdateError(f"GitHub returned HTTP {exc.code}") from exc
     try:
         payload = json.loads(raw.decode("utf-8"))

@@ -387,6 +387,75 @@ def cmd_shred(_sv: Sentinel, args) -> int:
     return 1 if failed else 0
 
 
+def cmd_verify_release(_sv: Sentinel, args) -> int:
+    """Verify downloaded release files against the post-quantum signed checksum list."""
+    import hashlib
+    from pathlib import Path
+
+    from sentinel_vision.pqsign import CONTEXT_RELEASE, SignatureError, verify
+    from sentinel_vision.trust import release_keys
+
+    folder = Path(args.folder)
+    sums_path, sig_path = folder / "SHA256SUMS.txt", folder / "SHA256SUMS.txt.sig"
+    if not sums_path.is_file() or not sig_path.is_file():
+        print(
+            "put SHA256SUMS.txt and SHA256SUMS.txt.sig from the release next to the downloaded files", file=sys.stderr
+        )
+        return 2
+    sums = sums_path.read_bytes()
+    try:
+        key = verify(sig_path.read_bytes(), sums, CONTEXT_RELEASE, release_keys())
+    except SignatureError as exc:
+        print(_c(RED, f"SIGNATURE INVALID: {exc}"))
+        return 1
+    print(_c(GRN, f"Signature valid (ML-DSA-65 + Ed25519, key {key.key_id})"))
+    bad = checked = 0
+    for line in sums.decode("utf-8", "replace").splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        digest, name = parts[0].lower(), parts[1].lstrip("*")
+        f = folder / name
+        if not f.is_file():
+            continue
+        h = hashlib.sha256()
+        with open(f, "rb") as fh:
+            while chunk := fh.read(1 << 20):
+                h.update(chunk)
+        ok = h.hexdigest() == digest
+        checked += 1
+        bad += not ok
+        print(f"{_c(GRN, 'OK ') if ok else _c(RED, 'BAD')} {name}")
+    if not checked:
+        print(_c(YEL, "no downloaded release files found in this folder"))
+        return 2
+    return 1 if bad else 0
+
+
+def cmd_uninstall_cleanup(sv: Sentinel, _args) -> int:
+    """Run by the uninstaller: remove hidden decoys, start-at-sign-in, and (with permission) hosts-file blocking."""
+    from sentinel_vision import autostart, webshield
+    from sentinel_vision.ransomware import RansomwareShield
+
+    n = RansomwareShield.cleanup_decoys(sv.settings.ransomware_folders)
+    print(f"Removed {n} decoy file(s).")
+    try:
+        autostart.disable()
+    except Exception as exc:
+        print(f"start at sign-in: {exc}")
+    if webshield.hosts_status():
+        try:
+            code = (
+                _webshield_privileged(["webshield-remove"])
+                if _is_admin()
+                else webshield.run_elevated(["webshield-remove"])
+            )
+            print("Website blocking removed." if code == 0 else "Website blocking could not be removed (permission).")
+        except OSError as exc:
+            print(f"Website blocking could not be removed: {exc}")
+    return 0
+
+
 def cmd_status(sv: Sentinel, _args) -> int:
     print(f"{APP_NAME} {__version__}")
     for name, ok, text in sv.scanner.engine_status():
@@ -444,6 +513,9 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("action", choices=["status", "check", "enable", "refresh", "disable"])
     w.add_argument("url", nargs="?")
     sub.add_parser("password-check", help="check whether a password appeared in data breaches (k-anonymity)")
+    sub.add_parser("uninstall-cleanup", help=argparse.SUPPRESS)
+    vr = sub.add_parser("verify-release", help="verify downloaded release files (post-quantum signature + SHA-256)")
+    vr.add_argument("folder", nargs="?", default=".")
     sh = sub.add_parser("shred", help="securely delete files or folders")
     sh.add_argument("paths", nargs="+")
     sh.add_argument("--yes", action="store_true", help="don't ask for confirmation")
@@ -497,6 +569,8 @@ def main(argv: list[str] | None = None) -> int:
             "webshield": cmd_webshield,
             "password-check": cmd_password_check,
             "shred": cmd_shred,
+            "verify-release": cmd_verify_release,
+            "uninstall-cleanup": cmd_uninstall_cleanup,
         }[args.command]
         return handler(sv, args)
     except KeyboardInterrupt:

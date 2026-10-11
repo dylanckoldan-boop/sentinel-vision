@@ -22,6 +22,13 @@ comment there before starting so work isn't duplicated.
 | macOS Full Disk Access guidance | 0.2.0 |
 | False-positive audit tool + weekly cross-platform audit | 0.2.0 |
 | Release pipeline that installs/upgrades/uninstalls the Windows installer before publishing | 0.2.0 |
+| Post-quantum (ML-DSA-65 + Ed25519) signed releases, verified by the self-updater; downgrade protection | 0.3.0 |
+| Ransomware shield (decoys, encryption-burst detection, culprit freezing) and encrypted rollback vault | 0.3.0 |
+| Web Shield: 500k+ malware/phishing domains, system-wide hosts blocking, link checker | 0.3.0 |
+| Security checkup with score; router-spoofing and DNS-hijack detection | 0.3.0 |
+| Memory scan, USB auto-scan, scheduled scans, camera/mic alerts, password breach check, shredder, quiet mode | 0.3.0 |
+| Opt-in cloud hash reputation (MalwareBazaar, CIRCL) | 0.3.0 |
+| Weekly live integration tests of every feed and service | 0.3.0 |
 
 ## Next — can be built by contributors
 
@@ -32,8 +39,10 @@ comment there before starting so work isn't duplicated.
 | **macOS code-signature verification** | Use `codesign --verify` / `SecStaticCodeCheckValidity` like the Windows Authenticode check. |
 | **Intel Mac and Windows-on-ARM builds** | Add an Intel macOS runner and a Windows ARM64 runner to the release matrix (PySide6 ships `win_arm64` wheels). |
 | **Translations** | Wrap UI strings with Qt's `tr()` and add `.ts` files. |
-| **Scheduled scans** | Run a quick scan daily / a full scan weekly from the app. |
 | **Linux packages** | `.deb`, `.rpm` and Flatpak packaging. |
+| **Privileged helper service** | A small always-running admin service would let Web Shield refresh blocking without a prompt, and protect the rollback vault from ransomware running with the user's rights. |
+| **macOS camera/microphone attribution** | macOS doesn't expose which app uses the camera; investigate the private `ControlCenter` / log-stream signals. |
+| **Browser extension** | Warn on phishing pages by URL path (the hosts file can only block whole host names). |
 | **macOS `.dmg` installer** | Drag-to-Applications disk image instead of a zip. |
 
 ## Needs a sponsor or a platform vendor

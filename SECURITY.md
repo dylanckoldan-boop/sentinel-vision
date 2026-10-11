@@ -22,7 +22,10 @@ You will get an acknowledgement within 72 hours. We aim to release a fix for con
 * Escaping the quarantine (decrypting/executing quarantined content without the user restoring it)
 * Path traversal or arbitrary file write through updates, restores or archives
 * Command injection through firewall, ClamAV or freshclam integration
-* Tricking the self-updater into running a file other than the official, checksum-verified installer
+* Tricking the self-updater into running a file other than the official installer (signature or checksum bypass,
+  downgrade), or weaknesses in the post-quantum signature scheme or its implementation
+* Ransomware-shield bypasses due to bugs (decoys not tripping, vault content altered without detection)
+* Making the Web Shield block legitimate core services, or injecting entries into the hosts file
 * Behavior monitoring terminating processes it should not (e.g. crafted command lines that kill system processes)
 * Detection bypasses that come from a bug in our code (not simply "this sample isn't in any signature set")
 

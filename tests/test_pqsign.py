@@ -53,3 +53,23 @@ def test_pinned_release_key_is_well_formed():
     keys = release_keys()
     assert keys, "a release key must be pinned"
     assert all(len(k.mldsa65) == 1952 and len(k.ed25519) == 32 for k in keys)
+
+
+def test_verify_release_cli(tmp_path, monkeypatch, capsys):
+    import hashlib
+
+    from sentinel_vision import cli, trust
+
+    key = pqsign.PrivateKey.generate()
+    monkeypatch.setattr(trust, "RELEASE_KEYS_B64", [key.public_key().to_b64()])
+    setup = tmp_path / "SentinelVision-9.9.9-Setup.exe"
+    setup.write_bytes(b"MZ installer bytes")
+    sums = f"{hashlib.sha256(setup.read_bytes()).hexdigest()}  {setup.name}\n".encode()
+    (tmp_path / "SHA256SUMS.txt").write_bytes(sums)
+    (tmp_path / "SHA256SUMS.txt.sig").write_bytes(pqsign.sign(key, sums, pqsign.CONTEXT_RELEASE))
+    assert cli.main(["verify-release", str(tmp_path)]) == 0
+    setup.write_bytes(b"MZ tampered")
+    assert cli.main(["verify-release", str(tmp_path)]) == 1
+    (tmp_path / "SHA256SUMS.txt").write_bytes(sums.replace(b"  ", b" *"))  # checksum list altered
+    assert cli.main(["verify-release", str(tmp_path)]) == 1
+    assert "SIGNATURE INVALID" in capsys.readouterr().out

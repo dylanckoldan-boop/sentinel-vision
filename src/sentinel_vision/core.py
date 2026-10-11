@@ -109,7 +109,10 @@ class Sentinel:
             if rw_key != self._rw_key or not self.ransomware.running:
                 self.ransomware.start(s.ransomware_folders)
         else:
+            was_on = self._rw_key is not None and self._rw_key[0]
             self.ransomware.stop()
+            if was_on:  # switched off by the user: don't leave hidden decoys behind
+                RansomwareShield.cleanup_decoys(list(self._rw_key[1]))
         self._rw_key = rw_key
 
     def apply_settings(self) -> None:
