@@ -4,6 +4,8 @@ name: Integration
 # environment, and they change without notice), on all three operating systems.
 
 on:
+  push:
+    branches: ["v*-dev"]  # pre-release branches are verified against the live services too
   schedule:
     - cron: "41 5 * * 3"  # weekly, Wednesday 05:41 UTC
   workflow_dispatch:
