@@ -65,6 +65,8 @@ class Feed:
       spamhaus_json    Spamhaus DROP JSON-lines (``{"cidr": ...}``)
       ip_port          ``ip:port`` per line (ThreatFox style)
       yara_zip         zip archive of .yar/.yara rule files
+      domains_malware  hostnames/URLs (any common list format) of malware-distribution sites
+      domains_phishing hostnames/URLs of phishing sites
     ``{abusech_key}`` in a URL is replaced by the configured abuse.ch Auth-Key.
     """
 
@@ -115,6 +117,30 @@ DEFAULT_FEEDS: list[Feed] = [
         description="Hosts observed actively attacking or compromised.",
     ),
     Feed(
+        "URLhaus malware sites",
+        "https://urlhaus.abuse.ch/downloads/hostfile/",
+        "domains_malware",
+        description="Websites currently distributing malware (abuse.ch).",
+    ),
+    Feed(
+        "Phishing.Database active domains",
+        "https://raw.githubusercontent.com/mitchellkrogza/Phishing.Database/master/phishing-domains-ACTIVE.txt",
+        "domains_phishing",
+        description="Verified, currently active phishing domains (community project).",
+    ),
+    Feed(
+        "Phishing Army",
+        "https://phishing.army/download/phishing_army_blocklist.txt",
+        "domains_phishing",
+        description="Phishing domains aggregated from PhishTank, OpenPhish and others.",
+    ),
+    Feed(
+        "OpenPhish community feed",
+        "https://openphish.com/feed.txt",
+        "domains_phishing",
+        description="Phishing URLs detected in the last hours (free community feed).",
+    ),
+    Feed(
         "CINS Army bad actors",
         "https://cinsscore.com/list/ci-badguys.txt",
         "ip_list",
@@ -139,6 +165,11 @@ def _default_watch_paths() -> list[str]:
     else:
         candidates.append(home / ".config/autostart")
     return [str(p) for p in candidates if p.exists()]
+
+
+def _default_ransomware_folders() -> list[str]:
+    home = Path.home()
+    return [str(p) for p in (home / "Documents", home / "Desktop", home / "Pictures") if p.is_dir()]
 
 
 @dataclass
@@ -188,6 +219,32 @@ class Settings:
     behavior_kill_malicious: bool = True  # end programs that signature engines confirm as malware
     behavior_block_ransomware: bool = True  # end processes that delete shadow copies / disable recovery
 
+    # ransomware shield & rollback vault
+    ransomware_enabled: bool = True
+    ransomware_folders: list[str] = field(default_factory=_default_ransomware_folders)
+    ransomware_auto_suspend: bool = True  # freeze likely culprits when a tripwire fires (reversible)
+    vault_max_mb: int = 5120
+    vault_keep_versions: int = 10
+
+    # web shield
+    webshield_enabled: bool = True  # download malicious/phishing domain lists for the link checker & monitor
+    webshield_block_hosts: bool = False  # also block them system-wide via the hosts file (needs administrator)
+
+    # cloud reputation (sends SHA-256 hashes only, never files)
+    cloud_lookup: bool = False
+
+    # devices & schedules
+    usb_autoscan: bool = True
+    schedule_quick_daily: bool = True
+    schedule_full_weekly: bool = True
+    schedule_hour: int = 12  # local hour for scheduled scans
+    schedule_full_weekday: int = 6  # 0 = Monday … 6 = Sunday
+
+    # privacy & network posture
+    privacy_monitor: bool = True  # camera / microphone use alerts
+    netsec_enabled: bool = True  # Wi-Fi, ARP-spoofing and DNS checks
+    quiet_mode: bool = False  # suppress non-critical notifications (gaming / presentations)
+
     # application
     check_app_updates: bool = True
     minimize_to_tray: bool = True
@@ -228,6 +285,9 @@ class Settings:
             ):
                 continue  # ignore wrongly typed values
             setattr(s, k, v)
+        # feeds added in newer versions appear for people upgrading with saved settings
+        known_feeds = {f.name for f in s.feeds}
+        s.feeds += [Feed(**asdict(f)) for f in DEFAULT_FEEDS if f.name not in known_feeds]
         return s
 
     def save(self) -> None:

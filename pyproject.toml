@@ -28,7 +28,7 @@ dependencies = [
     "psutil>=5.9",
     "watchdog>=4.0",
     "pefile>=2023.2.7",
-    "cryptography>=42",
+    "cryptography>=50",
     "platformdirs>=4.0",
     "certifi>=2024.2.2",
 ]
@@ -55,6 +55,7 @@ packages = ["src/sentinel_vision"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = ["online: talks to live third-party services (run with SV_ONLINE=1)"]
 
 [tool.ruff]
 line-length = 120

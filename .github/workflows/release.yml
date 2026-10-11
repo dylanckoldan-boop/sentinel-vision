@@ -314,6 +314,22 @@ jobs:
             echo "shows *Windows protected your PC* — click **More info → Run anyway**. See the README for details."
           } >> notes.md
           cat notes.md
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Post-quantum signature (ML-DSA-65 + Ed25519)
+        env:
+          SV_SIGNING_KEY: ${{ secrets.SV_SIGNING_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$SV_SIGNING_KEY" ]]; then
+            echo "::warning title=Release not signed::Add the SV_SIGNING_KEY repository secret (docs/CODE_SIGNING.md). Apps will not auto-install an unsigned release."
+            exit 0
+          fi
+          python -m pip install --quiet "cryptography>=50"
+          python tools/pq_sign.py artifacts/SHA256SUMS.txt
+          echo "::notice title=Release signed::SHA256SUMS.txt signed with ML-DSA-65 + Ed25519"
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ env.VERSION }}
@@ -322,5 +338,4 @@ jobs:
           body_path: notes.md
           files: |
             artifacts/SentinelVision-*
-            artifacts/SHA256SUMS.txt
-          fail_on_unmatched_files: true
+            artifacts/SHA256SUMS.txt*

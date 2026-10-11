@@ -34,7 +34,7 @@ PSEUDO_FS_ALLOWED = ("/dev/shm", "/run/media", "/run/user")  # real files live h
 PSEUDO_FS = ("/proc", "/sys", "/dev", "/run", "/snap", "/var/lib/docker", "/System/Volumes/Data/.Spotlight-V100")
 
 
-EXACT_ENGINES = ("hash", "clamav")
+EXACT_ENGINES = ("hash", "clamav", "cloud")
 
 
 def _system_dirs() -> tuple[str, ...]:
@@ -116,6 +116,7 @@ class Scanner:
         self.settings = settings
         self.db = db
         self.quarantine = quarantine or Quarantine()
+        self.reputation = None  # optional ReputationService (cloud hash lookups), set by core
         self._engines_lock = threading.Lock()
         self.engines: list[Engine] = []
         self.build_engines()
@@ -211,6 +212,7 @@ class Scanner:
             res.error = "; ".join(errs)
         self._drop_generated_rule_noise(res)
         self._apply_publisher_trust(obj, res)
+        self._apply_cloud_reputation(obj, res, origin)
 
         member_results: list[ScanResult] = []
         if self.settings.scan_archives:
@@ -331,6 +333,30 @@ class Scanner:
                 f"{uncompressed // (1024 * 1024):,} MB packed into {max(1, compressed // 1024):,} KB ({ratio:,.0f}:1)"
             )
 
+    CLOUD_ORIGINS = ("realtime", "process", "behavior", "usb")
+
+    def _apply_cloud_reputation(self, obj: ScanObject, res: ScanResult, origin: str) -> None:
+        """Opt-in hash lookups: catch malware published minutes ago, and clear heuristic-only suspicions about
+        software catalogued as known-good. Only for new programs/scripts arriving through real-time paths, or
+        any file that already has a heuristic finding."""
+        rep_service = self.reputation
+        if rep_service is None or not rep_service.enabled:
+            return
+        head = obj.head
+        executable = head[:2] == b"MZ" or head[:4] in (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
+        script = obj.name.lower().rsplit(".", 1)[-1] in {"ps1", "vbs", "js", "jse", "hta", "bat", "cmd", "sh", "wsf"}
+        heuristic_only = bool(res.detections) and all(d.engine == "heuristics" for d in res.detections)
+        if not (heuristic_only or ((executable or script) and origin in self.CLOUD_ORIGINS)):
+            return
+        rep = rep_service.lookup(obj.sha256)
+        if rep.malware:
+            res.detections.append(
+                Detection("cloud", rep.malware, Severity.CRITICAL, "Known malware sample (MalwareBazaar hash match)")
+            )
+        elif rep.known_good and heuristic_only:
+            log.info("clearing heuristic finding on catalogued file %s (%s)", res.path, rep.known_good_source)
+            res.detections = []
+
     @staticmethod
     def _drop_generated_rule_noise(res: ScanResult) -> None:
         """Machine-generated code-byte rules (Malpedia "*_Auto") occasionally collide with ordinary libraries; on
@@ -445,6 +471,7 @@ class Scanner:
         cancel: threading.Event | None = None,
         origin: str = "scan",
         use_cache: bool = True,
+        max_files: int = 0,
     ) -> ScanSummary:
         summary = ScanSummary()
         cancel = cancel or threading.Event()
@@ -476,7 +503,9 @@ class Scanner:
 
         with ThreadPoolExecutor(max_workers=self.settings.scan_threads, thread_name_prefix="scan") as pool:
             inflight: set[Future] = set()
-            for path in self.iter_files(roots, cancel):
+            for submitted, path in enumerate(self.iter_files(roots, cancel)):
+                if max_files and submitted >= max_files:
+                    break
                 if cancel.is_set():
                     break
                 inflight.add(pool.submit(self.scan_file, path, origin, True, use_cache))

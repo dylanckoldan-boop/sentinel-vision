@@ -113,10 +113,11 @@ def extract_yara_zip(data: bytes, dest: Path) -> int:
 
 
 class Updater:
-    def __init__(self, settings: Settings, db: Database, intel: IntelStore) -> None:
+    def __init__(self, settings: Settings, db: Database, intel: IntelStore, domains=None) -> None:
         self.settings = settings
         self.db = db
         self.intel = intel
+        self.domains = domains  # webshield.DomainIntel
 
     @property
     def last_update(self) -> float:
@@ -163,6 +164,16 @@ class Updater:
         if "abuse.ch" in url and self.settings.abusech_auth_key:
             headers["Auth-Key"] = self.settings.abusech_auth_key.strip()
         data = download(url, headers)
+        if feed.kind in ("domains_malware", "domains_phishing"):
+            from sentinel_vision.webshield import parse_domain_list
+
+            if self.domains is None:
+                return "skipped (web shield not available)", False
+            hosts = parse_domain_list(_maybe_unzip_text(data))
+            if not hosts:
+                raise ValueError("feed contained no domains (format changed or access denied?)")
+            stored = self.domains.replace_source(feed.name, feed.kind.split("_", 1)[1], hosts)
+            return f"{stored:,} domains", False
         if feed.kind == "yara_zip":
             return self._install_yara(feed, data), True
         if feed.kind in IP_PARSERS:

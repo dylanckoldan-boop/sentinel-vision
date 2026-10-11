@@ -45,7 +45,15 @@ class ProtectionPage(Page):
         left.addWidget(self.toggle)
         left.addWidget(self.state)
         left.addWidget(self.behavior_toggle)
+        self.rw_toggle = QCheckBox("Ransomware shield & rollback vault")
+        self.rw_toggle.setStyleSheet(BIG)
+        left.addWidget(self.rw_toggle)
         left.addWidget(self.net_toggle)
+        self.usb_toggle = QCheckBox("Scan USB drives when connected")
+        self.privacy_toggle = QCheckBox("Alert when an app uses the camera or microphone")
+        self.netsec_toggle = QCheckBox("Watch for router spoofing and DNS hijacking")
+        for w in (self.usb_toggle, self.privacy_toggle, self.netsec_toggle):
+            left.addWidget(w)
         self.auto_q = QCheckBox("Quarantine signature detections automatically")
         self.kill_mal = QCheckBox("End programs confirmed as malware")
         self.kill_ransom = QCheckBox("Stop ransomware from deleting backups")
@@ -119,6 +127,10 @@ class ProtectionPage(Page):
         self.kill_mal.toggled.connect(lambda on: self._set("behavior_kill_malicious", on))
         self.kill_ransom.toggled.connect(lambda on: self._set("behavior_block_ransomware", on))
         self.login_toggle.toggled.connect(self._toggle_login)
+        self.rw_toggle.toggled.connect(lambda on: self._set("ransomware_enabled", on, apply=True))
+        self.usb_toggle.toggled.connect(lambda on: self._set("usb_autoscan", on, apply=True))
+        self.privacy_toggle.toggled.connect(lambda on: self._set("privacy_monitor", on, apply=True))
+        self.netsec_toggle.toggled.connect(lambda on: self._set("netsec_enabled", on, apply=True))
         self.b_add.clicked.connect(self._add)
         self.b_rm.clicked.connect(self._remove)
         self._sync()
@@ -133,6 +145,10 @@ class ProtectionPage(Page):
             (self.auto_q, st.auto_quarantine),
             (self.kill_mal, st.behavior_kill_malicious),
             (self.kill_ransom, st.behavior_block_ransomware),
+            (self.rw_toggle, st.ransomware_enabled),
+            (self.usb_toggle, st.usb_autoscan),
+            (self.privacy_toggle, st.privacy_monitor),
+            (self.netsec_toggle, st.netsec_enabled),
         )
         for w, v in pairs:
             w.blockSignals(True)
@@ -198,7 +214,7 @@ class ProtectionPage(Page):
         )
         self.c_scanned.set(f"{rt.files_scanned:,}", "this session")
         dets = self.s.db.recent_detections(400)
-        rows = [d for d in dets if d.origin in ("realtime", "behavior")][:150]
+        rows = [d for d in dets if d.origin in ("realtime", "behavior", "ransomware", "usb", "memory")][:150]
         stopped = rt.threats_blocked + sum(1 for e in self.s.behavior.events if e.action.startswith("terminated"))
         self.c_blocked.set(str(stopped), "this session", theme.DANGER if stopped else theme.OK)
         self.c_procs.set(f"{self.s.behavior.processes_checked:,}", "this session")
