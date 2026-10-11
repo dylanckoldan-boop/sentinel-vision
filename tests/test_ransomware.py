@@ -202,3 +202,48 @@ def test_remove_canaries(shield):
     n = sh.remove_canaries()
     assert n == len(CANARY_NAMES)
     assert not any((folder / name).exists() for name in CANARY_NAMES)
+
+
+def test_decoy_content_is_stable_over_time(monkeypatch):
+    from sentinel_vision import ransomware
+
+    first = {n: ransomware._decoy_bytes(n) for n in CANARY_NAMES}
+    later = time.time() + 7 * 86400
+    monkeypatch.setattr(time, "time", lambda: later)
+    assert {n: ransomware._decoy_bytes(n) for n in CANARY_NAMES} == first
+
+
+def test_cleanup_removes_current_and_legacy_decoys_only(tmp_path):
+    from sentinel_vision import ransomware
+
+    for name in CANARY_NAMES:
+        (tmp_path / name).write_bytes(ransomware._decoy_bytes(name))
+    # a decoy written by v0.3 pre-releases: same members and text, but a different zip timestamp
+    zipped = [n for n in CANARY_NAMES if n.endswith((".docx", ".xlsx"))]
+    if zipped:
+        name = zipped[0]
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for member, text in ransomware._decoy_parts(name.rsplit(".", 1)[1]):
+                z.writestr(zipfile.ZipInfo(member, date_time=(2025, 3, 4, 5, 6, 8)), text)
+        (tmp_path / name).write_bytes(buf.getvalue())
+    removed = RansomwareShield.cleanup_decoys([str(tmp_path)])
+    assert removed == len(CANARY_NAMES)
+    assert not any((tmp_path / n).exists() for n in CANARY_NAMES)
+
+    # a user's real file with the same name is never deleted
+    user = tmp_path / CANARY_NAMES[0]
+    user.write_bytes(b"my real budget")
+    assert RansomwareShield.cleanup_decoys([str(tmp_path)]) == 0
+    assert user.read_bytes() == b"my real budget"
+
+
+def test_planting_never_overwrites_a_user_file(shield):
+    sh, folder = shield
+    target = folder / CANARY_NAMES[0]
+    target.unlink()
+    target.write_bytes(b"user data")
+    sh._plant_canaries()
+    assert target.read_bytes() == b"user data"
+    assert not sh.is_canary(str(target))
+    assert len(sh.canaries) == len(CANARY_NAMES) - 1

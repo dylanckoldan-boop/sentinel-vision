@@ -75,23 +75,57 @@ def default_folders() -> list[str]:
     return [str(p) for p in (home / "Documents", home / "Desktop", home / "Pictures") if p.is_dir()]
 
 
+_ZIP_TIME = (2026, 1, 5, 9, 30, 0)  # fixed, so the same decoy always has exactly the same bytes
+_DECOY_MEMBERS = {
+    "docx": ("[Content_Types].xml", "docProps/app.xml", "word/document.xml"),
+    "xlsx": ("[Content_Types].xml", "docProps/app.xml", "xl/workbook.xml"),
+}
+
+
+def _decoy_parts(ext: str) -> list[tuple[str, str]]:
+    names = _DECOY_MEMBERS[ext]
+    return [
+        (
+            names[0],
+            '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+        ),
+        (names[1], "<Properties><Application>Microsoft Office</Application></Properties>"),
+        (names[2], "<root>" + "Quarterly figures. " * 200 + "</root>"),
+    ]
+
+
 def _decoy_bytes(name: str) -> bytes:
-    """Realistic-looking content so ransomware treats the decoy like any other document."""
+    """Realistic-looking content so ransomware treats the decoy like any other document.
+
+    The output is deterministic (fixed zip timestamps): the uninstaller recognises decoys by their exact content.
+    """
     ext = extension(name)
-    if ext in ("docx", "xlsx"):
+    if ext in _DECOY_MEMBERS:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-            z.writestr(
-                "[Content_Types].xml",
-                '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
-            )
-            z.writestr("docProps/app.xml", "<Properties><Application>Microsoft Office</Application></Properties>")
-            z.writestr(
-                "word/document.xml" if ext == "docx" else "xl/workbook.xml",
-                "<root>" + "Quarterly figures. " * 200 + "</root>",
-            )
+            for member, text in _decoy_parts(ext):
+                info = zipfile.ZipInfo(member, date_time=_ZIP_TIME)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                z.writestr(info, text)
         return buf.getvalue()
     return ("Account notes\n" + "Reference number and contact details.\n" * 120).encode()
+
+
+def is_decoy_content(name: str, data: bytes) -> bool:
+    """True if ``data`` is one of our decoys for ``name`` — including decoys written by older versions,
+    whose zip entries carried the time they were created."""
+    if data == _decoy_bytes(name):
+        return True
+    ext = extension(name)
+    if ext not in _DECOY_MEMBERS or len(data) > 64 * 1024:
+        return False
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            if sorted(z.namelist()) != sorted(_DECOY_MEMBERS[ext]):
+                return False
+            return all(z.read(member) == text.encode() for member, text in _decoy_parts(ext))
+    except (zipfile.BadZipFile, OSError, ValueError, KeyError):
+        return False
 
 
 def _hide(path: Path) -> None:
@@ -238,11 +272,17 @@ class RansomwareShield:
                 path = Path(folder) / name
                 data = _decoy_bytes(name)
                 try:
-                    if (
-                        not path.exists()
-                        or hashlib.sha256(path.read_bytes()).hexdigest() != hashlib.sha256(data).hexdigest()
-                    ):
-                        _unhide(path)
+                    if path.exists():
+                        current = path.read_bytes()
+                        if not is_decoy_content(name, current):
+                            # a real file of the user's that happens to have this name: never touch it
+                            log.info("not placing decoy %s: a different file already has that name", path)
+                            continue
+                        if current != data:  # decoy from an older version: refresh it
+                            _unhide(path)
+                            path.write_bytes(data)
+                            _hide(path)
+                    else:
                         path.write_bytes(data)
                         _hide(path)
                     self.canaries[os.path.normcase(str(path))] = hashlib.sha256(data).hexdigest()
@@ -257,7 +297,7 @@ class RansomwareShield:
             for name in CANARY_NAMES:
                 path = Path(folder) / name
                 try:
-                    if path.is_file() and path.read_bytes() == _decoy_bytes(name):
+                    if path.is_file() and is_decoy_content(name, path.read_bytes()):
                         _unhide(path)
                         path.unlink()
                         n += 1
