@@ -7,6 +7,7 @@ import logging
 import threading
 from pathlib import Path
 
+from sentinel_vision import policy
 from sentinel_vision.config import bundled_rules_dir, sub_dir
 from sentinel_vision.engines.base import Detection, Engine, ScanObject, Severity
 
@@ -167,14 +168,26 @@ class YaraEngine(Engine):
             sev = _severity_from_meta(m.meta)
             if sev == Severity.INFO:
                 continue
+            kind = policy.classify_rule(m.rule, m.tags, m.meta)
+            if kind == policy.MEMORY:
+                continue  # written for process memory (the memory scan uses it); on files it is noise
             desc = str(m.meta.get("description", "")) or f"Matched YARA rule {m.rule}"
-            out.append(
-                Detection(
-                    engine=self.name,
-                    name=m.rule,
-                    severity=sev,
-                    description=desc,
-                    details={"tags": list(m.tags), "author": m.meta.get("author", ""), "namespace": m.namespace},
-                )
-            )
+            details = {
+                "tags": list(m.tags),
+                "author": m.meta.get("author", ""),
+                "namespace": m.namespace,
+                "rule_class": kind,
+            }
+            if kind == policy.GENERATED:
+                sev = min(sev, Severity.MEDIUM)
+                details["report_only"] = True
+                desc = f"Code resembles a sample of this malware family (machine-generated rule, a hint only): {desc}"
+            elif kind == policy.TOOL:
+                sev = Severity.LOW
+                details["report_only"] = True
+                desc = f"Possibly unwanted or dual-use tool; legitimate software also uses it: {desc}"
+            elif kind == policy.NOISY:
+                sev = min(sev, Severity.MEDIUM)
+                details["report_only"] = True
+            out.append(Detection(engine=self.name, name=m.rule, severity=sev, description=desc, details=details))
         return out

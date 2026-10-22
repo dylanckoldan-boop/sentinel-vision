@@ -258,9 +258,15 @@ class ScanPage(Page):
         self._busy(False)
         self._tick()
         verb = "cancelled" if summary.cancelled else "complete"
-        if summary.infected:
-            self.status.setText(f"Scan {verb}: {summary.infected} threat(s) found")
+        if summary.threats:
+            extra = f", {summary.review} item(s) to review" if summary.review else ""
+            self.status.setText(f"Scan {verb}: {summary.threats} threat(s) found{extra}")
             self.status.setStyleSheet(f"color: {theme.DANGER};")
+        elif summary.review:
+            self.status.setText(
+                f"Scan {verb}: no threats found · {summary.review} item(s) to review (hints, not confirmed threats)"
+            )
+            self.status.setStyleSheet(f"color: {theme.WARN};")
         else:
             self.status.setText(f"Scan {verb}: no threats found")
             self.status.setStyleSheet(f"color: {theme.OK};")

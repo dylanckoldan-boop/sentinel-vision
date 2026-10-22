@@ -41,7 +41,8 @@ def _c(code: str, text: str) -> str:
 
 def _print_result(r: ScanResult) -> None:
     if r.infected:
-        print(_c(RED, f"[THREAT] {r.path}"))
+        label = "[REVIEW]" if r.needs_review_only else "[THREAT]"
+        print(_c(YEL if r.needs_review_only else RED, f"{label} {r.path}"))
         for d in r.detections:
             print(f"         {d.engine:<10} {d.name}  ({d.severity.label})")
         print(f"         action: {r.action}")
@@ -50,12 +51,12 @@ def _print_result(r: ScanResult) -> None:
 
 
 def _summary(s: ScanSummary) -> None:
-    color = RED if s.infected else GRN
+    color = RED if s.threats else (YEL if s.review else GRN)
     print(
         _c(
             color,
             f"\n{s.scanned:,} files scanned ({bytes_human(s.bytes)}) in {s.duration:.1f}s — "
-            f"{s.infected} infected, {s.errors} errors, {s.skipped} skipped",
+            f"{s.threats} threat(s), {s.review} to review, {s.errors} errors, {s.skipped} skipped",
         )
     )
 
@@ -76,12 +77,15 @@ def cmd_scan(sv: Sentinel, args) -> int:
             p = sv.scanner.scan_processes(on_result=on, cancel=cancel)
             s.scanned += p.scanned
             s.infected += p.infected
+            s.review += p.review
     if args.json:
         print(
             json.dumps(
                 {
                     "scanned": s.scanned,
                     "infected": s.infected,
+                    "threats": s.threats,
+                    "review": s.review,
                     "errors": s.errors,
                     "duration": s.duration,
                     "results": [
@@ -89,6 +93,7 @@ def cmd_scan(sv: Sentinel, args) -> int:
                             "path": r.path,
                             "sha256": r.sha256,
                             "action": r.action,
+                            "review_only": r.needs_review_only,
                             "error": r.error,
                             "detections": [
                                 {
@@ -111,7 +116,7 @@ def cmd_scan(sv: Sentinel, args) -> int:
             for r in results:
                 _print_result(r)
         _summary(s)
-    return 1 if s.infected else 0
+    return 1 if s.threats else 0  # items to review (hints) alone do not fail the command
 
 
 def cmd_update(sv: Sentinel, _args) -> int:

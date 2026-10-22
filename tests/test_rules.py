@@ -36,7 +36,14 @@ CASES = [
     ),
     (PE + b"usage: vssadmin delete shadows /for=c: /quiet", None),  # vssadmin.exe help text
     (b"sekurlsa::logonpasswords\nmimikatz", "SV_HackTool_Mimikatz"),
-    (b'{"url": "stratum+tcp://pool.example:3333", "algo": "randomx"}', "SV_CoinMiner_Config"),
+    (
+        b'{"donate-level": 1, "pools": [{"url": "stratum+tcp://pool.example.org:3333", "user": "4Abc"}],'
+        b' "cpu": {"enabled": true}, "algo": "rx/0"}',
+        "SV_CoinMiner_Config",
+    ),
+    (PE + b"xmrig --donate-level=1 --algo=rx/0 -o stratum+tcp://pool.example.org:443", "SV_CoinMiner_Config"),
+    # a conversation or documentation that merely talks about miners
+    (b'rule mentions xmrig, stratum+tcp:// and "donate-level" to explain coin-miner detection', None),
 ]
 
 

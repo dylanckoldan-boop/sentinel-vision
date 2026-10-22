@@ -37,6 +37,8 @@ class Detection:
     @property
     def is_signature(self) -> bool:
         """Signature-grade (as opposed to purely heuristic) detections may be auto-quarantined."""
+        if self.details.get("report_only"):
+            return False
         return self.engine in {"hash", "clamav", "cloud"} or (self.engine == "yara" and self.severity >= Severity.HIGH)
 
 

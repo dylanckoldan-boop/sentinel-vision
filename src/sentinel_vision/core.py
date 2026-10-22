@@ -150,13 +150,7 @@ class Sentinel:
     def scan_drive(self, mountpoint: str) -> ScanSummary:
         self.db.log_event("usb", f"Scanning new drive {mountpoint}")
         summary = self.scanner.scan_paths([mountpoint], origin="usb", max_files=50000)
-        level = "danger" if summary.infected else "info"
-        self.alert(
-            "Drive scanned",
-            f"{mountpoint}: {summary.scanned:,} files, {summary.infected} threat(s)"
-            + (" — removed to quarantine" if summary.infected else ""),
-            level,
-        )
+        self.alert("Drive scanned", f"{mountpoint}: {summary.scanned:,} files, {_outcome(summary)}", _level(summary))
         return summary
 
     def _on_drive(self, mountpoint: str) -> None:
@@ -188,10 +182,12 @@ class Sentinel:
                 if kind == "quick":
                     proc = self.scanner.scan_processes()
                     summary.infected += proc.infected
+                    summary.review += proc.review
+                    summary.results += proc.results
                 self.alert(
                     f"Scheduled {kind} scan finished",
-                    f"{summary.scanned:,} files checked, {summary.infected} threat(s) found",
-                    "danger" if summary.infected else "info",
+                    f"{summary.scanned:,} files checked, {_outcome(summary)}",
+                    _level(summary),
                 )
             finally:
                 self.scheduled_running = ""
@@ -199,3 +195,22 @@ class Sentinel:
 
         threading.Thread(target=work, name=f"scheduled-{kind}", daemon=True).start()
         return [kind]
+
+
+def _outcome(summary: ScanSummary) -> str:
+    """Plain wording for a finished scan: what was found and what was actually done about it."""
+    if not summary.infected:
+        return "no threats found"
+    quarantined = sum(1 for r in summary.results if r.action == "quarantined")
+    parts = []
+    if summary.threats:
+        parts.append(f"{summary.threats} threat(s) found")
+    if summary.review:
+        parts.append(f"{summary.review} item(s) to review")
+    if quarantined:
+        parts.append(f"{quarantined} moved to quarantine")
+    return ", ".join(parts)
+
+
+def _level(summary: ScanSummary) -> str:
+    return "danger" if summary.threats else ("warning" if summary.review else "info")
