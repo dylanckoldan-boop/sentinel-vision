@@ -184,10 +184,21 @@ class Sentinel:
                     summary.infected += proc.infected
                     summary.review += proc.review
                     summary.results += proc.results
+                mem_note = ""
+                if kind == "full" and self.settings.schedule_memory_scan:
+                    from sentinel_vision import memscan
+
+                    mem = memscan.scan_processes(self.scanner)
+                    if mem.hits:
+                        names = ", ".join(f"{h.name} ({h.pid})" for h in mem.hits[:5])
+                        mem_note = f"; memory scan: {len(mem.hits)} suspicious program(s): {names}"
+                        self.db.log_event("memscan", f"Scheduled memory scan: {names}", "warning")
+                    else:
+                        mem_note = f"; memory of {mem.scanned} programs checked, nothing found"
                 self.alert(
                     f"Scheduled {kind} scan finished",
-                    f"{summary.scanned:,} files checked, {_outcome(summary)}",
-                    _level(summary),
+                    f"{summary.scanned:,} files checked, {_outcome(summary)}{mem_note}",
+                    "warning" if mem_note.startswith("; memory scan:") and not summary.threats else _level(summary),
                 )
             finally:
                 self.scheduled_running = ""

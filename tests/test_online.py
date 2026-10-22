@@ -24,7 +24,7 @@ def test_every_default_feed_downloads_and_parses(sentinel):
     # third-party services have occasional outages: require the large majority, and the core ones
     assert len(failed) <= 2, report
     by_name = {r.feed: r for r in results}
-    for must in ("YARA Forge (core)", "URLhaus malware sites", "Phishing.Database active domains"):
+    for must in ("YARA Forge (core)", "Phishing.Database active domains", "Feodo Tracker botnet C2"):
         assert by_name[must].ok, report
     assert sentinel.domains.count() > 1000
     assert sentinel.intel.count > 100
@@ -54,3 +54,18 @@ def test_github_release_check_and_signature_policy():
             pytest.skip("GitHub API rate limit on shared CI runners")
         raise
     assert info is None or info.version
+
+
+@pytest.mark.skipif(not os.environ.get("ABUSECH_AUTH_KEY"), reason="needs a free abuse.ch Auth-Key (ABUSECH_AUTH_KEY)")
+def test_abusech_key_feeds_download_and_parse(sentinel):
+    from dataclasses import asdict
+
+    from sentinel_vision.config import DEFAULT_FEEDS, Feed
+
+    sentinel.settings.abusech_auth_key = os.environ["ABUSECH_AUTH_KEY"]
+    sentinel.settings.feeds = [Feed(**asdict(f)) for f in DEFAULT_FEEDS if f.requires_key]
+    sentinel.settings.run_freshclam = False
+    results = sentinel.updater.run()
+    report = "\n".join(f"{'OK ' if r.ok else 'ERR'} {r.feed}: {r.message}" for r in results)
+    print(report)
+    assert all(r.ok for r in results), report

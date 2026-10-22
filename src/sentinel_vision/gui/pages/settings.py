@@ -152,8 +152,11 @@ class SettingsPage(Page):
         self.sched_quick.setChecked(st.schedule_quick_daily)
         self.sched_full = QCheckBox("Full scan every week")
         self.sched_full.setChecked(st.schedule_full_weekly)
+        self.sched_mem = QCheckBox("Also check running programs' memory during the weekly full scan")
+        self.sched_mem.setChecked(st.schedule_memory_scan)
         pf.addRow(self.sched_quick)
         pf.addRow(self.sched_full)
+        pf.addRow(self.sched_mem)
         self.sched_hour = QSpinBox()
         self.sched_hour.setRange(0, 23)
         self.sched_hour.setSuffix(":00")
@@ -233,6 +236,7 @@ class SettingsPage(Page):
         st = self.s.settings
         st.schedule_quick_daily = self.sched_quick.isChecked()
         st.schedule_full_weekly = self.sched_full.isChecked()
+        st.schedule_memory_scan = self.sched_mem.isChecked()
         st.schedule_hour = self.sched_hour.value()
         st.schedule_full_weekday = self.sched_day.currentIndex()
         st.ransomware_folders = [ln.strip() for ln in self.rw_folders.toPlainText().splitlines() if ln.strip()]

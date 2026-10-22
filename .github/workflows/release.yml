@@ -59,15 +59,22 @@ jobs:
       - name: Install build tools (exact, hash-checked versions)
         shell: pwsh
         run: |
-          pip install --require-hashes -r requirements/build.lock
-          pip install --no-deps --no-build-isolation .
+          function Run-Logged([string]$Title, [scriptblock]$Cmd) {
+            $log = Join-Path $env:RUNNER_TEMP ("step-" + [guid]::NewGuid() + ".log")
+            & $Cmd *>&1 | Tee-Object -FilePath $log | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+              $tail = (Get-Content $log -Tail 25) -join "%0A"
+              Write-Host "::error title=$Title failed::$tail"
+              exit 1
+            }
+          }
+          Run-Logged "pip (locked)" { pip install --require-hashes -r requirements/build.lock }
+          Run-Logged "pip (project)" { pip install --no-deps --no-build-isolation . }
           # Inno Setup pinned to one version (Chocolatey verifies the download's checksum)
-          choco install innosetup --version $env:INNO_VERSION --no-progress -y --allow-downgrade
-          if ($LASTEXITCODE -ne 0) { throw "Inno Setup $env:INNO_VERSION could not be installed" }
+          Run-Logged "Inno Setup $env:INNO_VERSION" { choco install innosetup --version $env:INNO_VERSION --no-progress -y --allow-downgrade }
           $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup*\ISCC.exe", "$env:ProgramFiles\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $iscc) { throw "ISCC.exe not found" }
-          $v = (Get-Item $iscc.FullName).VersionInfo.ProductVersion
-          Write-Host "::notice title=Inno Setup::$($iscc.FullName) $v"
+          if (-not $iscc) { Write-Host "::error title=Inno Setup::ISCC.exe not found"; exit 1 }
+          Write-Host "::notice title=Inno Setup::$($iscc.FullName) $((Get-Item $iscc.FullName).VersionInfo.ProductVersion)"
       - name: Build app (PyInstaller)
         run: pyinstaller --noconfirm packaging/sentinel_vision.spec
       - name: Sign executables (optional)

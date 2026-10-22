@@ -73,6 +73,62 @@ def looks_encrypted(head: bytes, ext: str) -> bool:
     return not head.startswith(fmt)
 
 
+ZIP_EXT = frozenset(e for e, m in FORMATS.items() if m and m[0] == b"PK\x03\x04")
+SAMPLE = 4096
+
+
+def _text_scrambled(block: bytes) -> bool:
+    if len(block) < 512:
+        return False
+    try:
+        block.decode("utf-8")
+        return False
+    except UnicodeDecodeError as exc:
+        if exc.start >= len(block) - 4:
+            return False
+    printable = sum(1 for b in block if 32 <= b < 127 or b in (9, 10, 13))
+    return printable / len(block) < 0.7 and shannon_entropy(block) > 6.5
+
+
+def damaged(head: bytes, mid: bytes, tail: bytes, ext: str) -> bool:
+    """Like :func:`looks_encrypted`, but also catches ransomware that leaves the start of a file intact and encrypts
+    only parts of it ("intermittent encryption"): the end of a zip-based document must still hold its central
+    directory, a PDF must still end with %%EOF, a PNG with IEND, and text must stay text throughout."""
+    if looks_encrypted(head, ext):
+        return True
+    if not head or not tail:
+        return False
+    if ext in ZIP_EXT:
+        return b"PK\x05\x06" not in tail  # end-of-central-directory record
+    if ext == "pdf":
+        return b"%%EOF" not in tail
+    if ext == "png":
+        return b"IEND" not in tail[-64:]
+    if FORMATS.get(ext, ...) is None and ext in FORMATS:
+        return _text_scrambled(mid) or _text_scrambled(tail)
+    return False
+
+
+def sample_file(path: str | Path, head_size: int = 65536) -> tuple[bytes, bytes, bytes]:
+    """Start, middle and end of a file (tail covers a zip comment of up to 64 KB)."""
+    with open(path, "rb") as fh:
+        head = fh.read(head_size)
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        if size <= head_size:
+            return head, head[len(head) // 2 : len(head) // 2 + SAMPLE], head[-66000:]
+        fh.seek(size // 2)
+        mid = fh.read(SAMPLE)
+        fh.seek(max(0, size - 66000))
+        tail = fh.read()
+    return head, mid, tail
+
+
+def damaged_bytes(data: bytes, ext: str) -> bool:
+    n = len(data)
+    return damaged(data[:65536], data[n // 2 : n // 2 + SAMPLE], data[-66000:], ext)
+
+
 @dataclass
 class Version:
     id: int
@@ -187,7 +243,7 @@ class RollbackVault:
             data = p.read_bytes()
         except OSError:
             return None
-        suspect = looks_encrypted(data[:65536], extension(p))
+        suspect = damaged_bytes(data, extension(p))
         if suspect and not force:
             return None
         sha = hashlib.sha256(data).hexdigest()

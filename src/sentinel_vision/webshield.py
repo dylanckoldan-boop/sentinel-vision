@@ -125,9 +125,21 @@ def normalize_host(text: str) -> str:
     return t if DOMAIN_RE.match(t) else ""
 
 
+URL_IN_LINE = re.compile(r"(?i)\bhttps?://[^\s\"',<>]+")
+
+
 def parse_domain_list(text: str) -> list[str]:
+    """Hosts files, plain domain lists, URL lists and CSV exports with a URL column (e.g. URLhaus)."""
     out = []
     for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        m = URL_IN_LINE.search(line)
+        if m:
+            h = normalize_host(m.group(0))
+            if h:
+                out.append(h)
+            continue
         line = line.split("#", 1)[0].strip()
         if not line or line.startswith(("!", "[")):
             continue

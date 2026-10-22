@@ -116,7 +116,31 @@ def parse_ip_port(text: str) -> list[str]:
     return out
 
 
-IP_PARSERS = {"ip_list": parse_ip_list, "spamhaus_json": parse_spamhaus_json, "ip_port": parse_ip_port}
+def parse_threatfox_json(text: str) -> list[str]:
+    """ThreatFox API ``get_iocs`` response: keep the ``ip:port`` indicators (malware command-and-control servers)."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return []
+    if not isinstance(data, dict) or data.get("query_status") not in ("ok", None):
+        return []
+    out = []
+    for item in data.get("data") or []:
+        if not isinstance(item, dict) or item.get("ioc_type") != "ip:port":
+            continue
+        ip = str(item.get("ioc", "")).rsplit(":", 1)[0].strip("[]")
+        net = _as_network(ip)
+        if net:
+            out.append(net)
+    return out
+
+
+IP_PARSERS = {
+    "ip_list": parse_ip_list,
+    "spamhaus_json": parse_spamhaus_json,
+    "ip_port": parse_ip_port,
+    "threatfox_api": parse_threatfox_json,
+}
 
 
 # ----------------------------------------------------------------------------- store
