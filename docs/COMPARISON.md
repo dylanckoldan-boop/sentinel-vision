@@ -19,11 +19,14 @@ Last reviewed: October 2026 (Sentinel Vision 0.3.1).
 | Behaviour monitoring | ✅ attack-technique rules, new-program scanning, persistence watch | ✅ monitors apps for unusual activity | n/d |
 | Ransomware: decoys + encryption-burst detection | ✅ freezes the culprit (reversible) | ✅ controlled folder access | ✅ |
 | Ransomware: file rollback | ✅ **encrypted local versioned vault, point-in-time rollback** | Cloud backup (50 GB) | n/d |
+| Ransomware: slow and partial (intermittent) encryption detection | ✅ | n/d | n/d |
+| Tamper protection | ✅ Windows: protected service; vault, quarantine and settings out of reach of other programs; turning protection off needs administrator approval; app restarted if closed | ✅ Product Tamper Protection | n/d |
 | Memory scan for fileless malware | ✅ YARA on process memory | n/d | n/d |
 | USB / removable drive scanning | ✅ automatic | ✅ | n/d |
 | Scheduled scans | ✅ daily quick / weekly full, catches up missed runs | ✅ | n/d |
 | Malicious & phishing website blocking | ✅ system-wide via hosts file (every browser and app), 4 free feeds | ✅ Safe Web browser extension | n/d |
 | Link / scam checking | ✅ local link checker with look-alike & homograph detection | ✅ Safe Search Plus link verification | ✅ email, text and video scam detection |
+| Firewall blocking of known-malicious networks | ✅ Windows: Spamhaus DROP, Feodo Tracker, Emerging Threats lists, whole computer | ✅ Smart Firewall | ✅ Firewall |
 | Live per-connection network monitor with threat intel | ✅ every connection → process, botnet/criminal-IP feeds, one-click block | Firewall | n/d |
 | Router spoofing (ARP) / DNS-hijack detection, Wi-Fi checks | ✅ | Auto-VPN on unsecured Wi-Fi | n/d |
 | Security checkup with score | ✅ firewall, encryption, updates, UAC, RDP, SMBv1, Secure Boot, outdated apps… | Outdated-software monitoring | n/d |

@@ -1,12 +1,15 @@
-; Sentinel Vision - Windows installer (Inno Setup 6)
+; Sentinel Vision - Windows installer (Inno Setup 6.3+ / 7)
 ;
 ; Build (after `pyinstaller packaging/sentinel_vision.spec`):
-;   iscc /DAppVersion=0.2.0 packaging\windows\SentinelVision.iss
+;   iscc /DAppVersion=0.4.0 packaging\windows\SentinelVision.iss
 ; Output: dist\installer\SentinelVision-<version>-Setup.exe
 ;
-; Command-line switches understood by the installer (besides Inno's /SILENT, /VERYSILENT, /DIR=...):
+; Always installs into Program Files (asks for administrator permission once), so programs running as the user can
+; never replace Sentinel Vision's files, and installs the "Sentinel Vision Protection" service.
+; An older per-user installation (0.3.x, in the user's own folder) is removed and its data carried over.
+;
+; Command-line switches understood by the installer (besides Inno's /SILENT, /VERYSILENT):
 ;   /TASKS="autostart,desktopicon,addtopath"   choose options in silent installs
-;   /CURRENTUSER or /ALLUSERS                  install for this user (default, no admin) or all users
 ;   /RELAUNCH=1                                start the app after a silent install (used by self-update)
 
 #ifndef AppVersion
@@ -22,6 +25,9 @@
 #define AppName "Sentinel Vision"
 #define AppExe "SentinelVision.exe"
 #define CliExe "sentinel-vision-cli.exe"
+#define SvcExe "sentinel-vision-service.exe"
+#define SvcName "SentinelVisionService"
+#define AppIdStr "{9D3C2B71-6A4E-4F0B-9E57-2C1A8D4B5E60}"
 #define AppUrl "https://github.com/dylanckoldan-boop/sentinel-vision"
 #define RunValue "SentinelVision"
 #define RunKey "Software\Microsoft\Windows\CurrentVersion\Run"
@@ -43,9 +49,10 @@ DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 DisableWelcomePage=no
-PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog commandline
-UsePreviousPrivileges=yes
+; Program Files only: a folder other programs can write to would let malware replace Sentinel Vision's files
+DisableDirPage=yes
+UsePreviousAppDir=no
+PrivilegesRequired=admin
 UsePreviousTasks=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -68,12 +75,13 @@ SetupMutex=SentinelVisionSetupMutex
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "autostart"; Description: "Start Sentinel Vision automatically when I sign in (recommended - protection only runs while the app runs)"; GroupDescription: "Protection:"
+Name: "autostart"; Description: "Start Sentinel Vision when I sign in and restart it if it is closed (recommended)"; GroupDescription: "Protection:"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "addtopath"; Description: "Add the sentinel-vision-cli command-line tool to PATH"; GroupDescription: "Command line:"; Flags: unchecked
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "migrate-user-install.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
 
 [InstallDelete]
 ; remove files of the previous version so stale libraries never mix with new ones
@@ -83,16 +91,14 @@ Type: filesandordirs; Name: "{app}\_internal"
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Comment: "Open-source antimalware"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
-[Registry]
-; HKA = HKCU for a per-user install, HKLM for an all-users install. The app reads/writes the same value.
-Root: HKA; Subkey: "{#RunKey}"; ValueType: string; ValueName: "{#RunValue}"; ValueData: """{app}\{#AppExe}"" --minimized"; Tasks: autostart; Flags: uninsdeletevalue
-
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName} now"; Flags: nowait postinstall skipifsilent runasoriginaluser
 Filename: "{app}\{#AppExe}"; Flags: nowait runasoriginaluser; Check: RelaunchRequested
 
 [UninstallRun]
-; remove hidden ransomware decoys, start-at-sign-in and (asking for permission) hosts-file blocking
+; machine-wide blocking (hosts file, firewall), then the service, then the user's decoys and start-at-sign-in
+Filename: "{app}\{#SvcExe}"; Parameters: "remove-system"; Flags: runhidden waituntilterminated; RunOnceId: "SVSystem"
+Filename: "{sys}\sc.exe"; Parameters: "delete {#SvcName}"; Flags: runhidden waituntilterminated; RunOnceId: "SVDeleteService"
 Filename: "{app}\{#CliExe}"; Parameters: "uninstall-cleanup"; Flags: runhidden waituntilterminated; RunOnceId: "SVCleanup"
 
 [UninstallDelete]
@@ -123,9 +129,44 @@ begin
   end;
 end;
 
+function ScExec(const Params: String): Integer;
+var
+  ResultCode: Integer;
+begin
+  if Exec(ExpandConstant('{sys}\sc.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Result := ResultCode
+  else
+    Result := -1;
+end;
+
+function ServiceExists(): Boolean;
+begin
+  Result := ScExec('query {#SvcName}') = 0;
+end;
+
+procedure StopService();
+var
+  I, ResultCode: Integer;
+begin
+  if not ServiceExists() then
+    exit;
+  ScExec('stop {#SvcName}');
+  { wait until it has really stopped (its files are in use until then) }
+  for I := 1 to 60 do
+  begin
+    Exec(ExpandConstant('{cmd}'), '/C sc.exe query {#SvcName} | find "STOPPED"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if ResultCode = 0 then
+      break;
+    Sleep(500);
+  end;
+  KillImage('{#SvcExe}');
+end;
+
 procedure StopRunningApp();
 begin
-  { The app keeps running in the tray, so a normal close request would only hide it: end it so files can be replaced. }
+  { The service would restart the app, so it goes first. The app keeps running in the tray, so a normal close
+    request would only hide it: end it so files can be replaced. }
+  StopService();
   KillImage('{#AppExe}');
   KillImage('{#CliExe}');
   Sleep(1000);
@@ -133,8 +174,81 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  StopRunningApp();
   Result := '';
+  if CompareText(ExtractFilePath(RemoveBackslash(WizardDirValue())), AddBackslash(ExpandConstant('{autopf}'))) <> 0 then
+  begin
+    Result := 'Sentinel Vision must be installed in ' + ExpandConstant('{autopf}') + ' so other programs cannot change its files.';
+    exit;
+  end;
+  StopRunningApp();
+end;
+
+procedure InstallService();
+var
+  Bin: String;
+begin
+  Bin := '"\"' + ExpandConstant('{app}\{#SvcExe}') + '\""';
+  if ServiceExists() then
+    ScExec('config {#SvcName} binPath= ' + Bin + ' start= auto obj= LocalSystem DisplayName= "Sentinel Vision Protection"')
+  else
+    ScExec('create {#SvcName} binPath= ' + Bin + ' start= auto obj= LocalSystem DisplayName= "Sentinel Vision Protection"');
+  ScExec('description {#SvcName} "Protects Sentinel Vision''s rollback vault, quarantine and settings from other programs, keeps the app running, and applies system-wide website and network blocking."');
+  { restart automatically if it ever stops unexpectedly }
+  ScExec('failure {#SvcName} reset= 86400 actions= restart/5000/restart/10000/restart/60000');
+  ScExec('failureflag {#SvcName} 1');
+  ScExec('start {#SvcName}');
+end;
+
+procedure WaitForService();
+var
+  I, ResultCode: Integer;
+begin
+  for I := 1 to 40 do
+  begin
+    Exec(ExpandConstant('{cmd}'), '/C sc.exe query {#SvcName} | find "RUNNING"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if ResultCode = 0 then
+      break;
+    Sleep(500);
+  end;
+  Sleep(1500);
+end;
+
+var
+  HadUserInstall: Boolean;
+
+function InitializeSetup(): Boolean;
+begin
+  { an older version installed in this user's own folder (only visible here when the same user approved the prompt;
+    otherwise the clean-up script, which runs as the original user, still finds it) }
+  HadUserInstall := RegKeyExists(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppIdStr}_is1');
+  Result := True;
+end;
+
+procedure MigrateUserInstall();
+var
+  ResultCode: Integer;
+begin
+  { runs as the ORIGINAL (not elevated) user: removes the old per-user copy, its shortcuts and PATH entry, keeps
+    the start-at-sign-in choice. Nothing in the old, user-writable folder is ever run. }
+  ExecAsOriginalUser(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\tools\migrate-user-install.ps1') +
+    '" -NewDir "' + ExpandConstant('{app}') + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Log(Format('per-user install clean-up exit code %d', [ResultCode]));
+  { Setup named this entry "(All users)" because the per-user one still existed; that one is gone now }
+  if not RegKeyExists(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppIdStr}_is1') then
+    RegWriteStringValue(HKLM64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppIdStr}_is1',
+      'DisplayName', '{#AppName}');
+end;
+
+procedure SetAutostart(const On: Boolean);
+var
+  ResultCode: Integer;
+  Arg: String;
+begin
+  if On then Arg := 'autostart on' else Arg := 'autostart off';
+  { run with the installer's administrator approval (the same account that approved it), so turning it off is
+    accepted by the protection service too }
+  Exec(ExpandConstant('{app}\{#CliExe}'), Arg, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 { ---------- PATH handling (per-user or machine-wide, matching the install mode) ---------- }
@@ -211,13 +325,14 @@ begin
       AddToPath(AppDir)
     else
       RemoveFromPath(AppDir);
-    { Unticking "start at sign-in" on an upgrade must really turn it off (including a value the app wrote). }
-    if not WizardIsTaskSelected('autostart') then
-    begin
-      RegDeleteValue(HKEY_CURRENT_USER, '{#RunKey}', '{#RunValue}');
-      if IsAdminInstallMode() then
-        RegDeleteValue(HKEY_LOCAL_MACHINE, '{#RunKey}', '{#RunValue}');
-    end;
+    { versions before 0.4 wrote a machine-wide start-at-sign-in value; the app now keeps a per-user one }
+    RegDeleteValue(HKEY_LOCAL_MACHINE, '{#RunKey}', '{#RunValue}');
+    MigrateUserInstall();
+    InstallService();
+    WaitForService();
+    { an upgrade from a per-user install keeps that user's own start-at-sign-in choice (handled by the clean-up) }
+    if not HadUserInstall then
+      SetAutostart(WizardIsTaskSelected('autostart'));
   end;
 end;
 
@@ -229,28 +344,34 @@ begin
   Result := True;
 end;
 
+var
+  DeleteData: Boolean;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataDir: String;
+  ResultCode: Integer;
 begin
   if CurUninstallStep = usUninstall then
   begin
     RemoveFromPath(ExpandConstant('{app}'));
     { the app itself may have written the per-user value from its Protection page }
     RegDeleteValue(HKEY_CURRENT_USER, '{#RunKey}', '{#RunValue}');
-    if IsAdminInstallMode() then
-      RegDeleteValue(HKEY_LOCAL_MACHINE, '{#RunKey}', '{#RunValue}');
+    RegDeleteValue(HKEY_LOCAL_MACHINE, '{#RunKey}', '{#RunValue}');
+    DeleteData := False;
+    if not UninstallSilent() then
+      DeleteData := MsgBox('Also delete Sentinel Vision''s data?' + #13#10#13#10 +
+                'This includes settings, detection history, downloaded definitions, the encrypted quarantine and the ' +
+                'rollback vault (encrypted earlier versions of documents) of every account on this computer. ' +
+                'Your own documents are not affected.' + #13#10#13#10 +
+                'Choose No to keep it for a future reinstall.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
+    if DeleteData then
+      Exec(ExpandConstant('{app}\{#SvcExe}'), 'wipe-data', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
   if CurUninstallStep = usPostUninstall then
   begin
     DataDir := ExpandConstant('{localappdata}\SentinelVision');
-    if DirExists(DataDir) and (not UninstallSilent()) then
-    begin
-      if MsgBox('Also delete Sentinel Vision''s data?' + #13#10#13#10 +
-                'This includes settings, detection history, downloaded definitions, the encrypted quarantine and the ' +
-                'rollback vault (encrypted earlier versions of your documents). Your own documents are not affected.' + #13#10#13#10 +
-                'Choose No to keep it for a future reinstall.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
-        DelTree(DataDir, True, True, True);
-    end;
+    if DeleteData and DirExists(DataDir) then
+      DelTree(DataDir, True, True, True);
   end;
 end;

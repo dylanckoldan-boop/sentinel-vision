@@ -15,6 +15,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import psutil
 
@@ -696,11 +697,118 @@ def network_checks(sentinel=None) -> list[Check]:
     return out
 
 
+# ---------------------------------------------------------------------------------------------- browser DNS
+def _browser_profiles() -> dict[str, list[Path]]:
+    """Files that record each browser's own "secure DNS" (DNS over HTTPS) choice."""
+    home = Path.home()
+    out: dict[str, list[Path]] = {"Chrome": [], "Edge": [], "Brave": [], "Firefox": []}
+    if sys.platform == "win32":
+        local = Path(os.environ.get("LOCALAPPDATA", home / "AppData/Local"))
+        roaming = Path(os.environ.get("APPDATA", home / "AppData/Roaming"))
+        out["Chrome"].append(local / "Google/Chrome/User Data/Local State")
+        out["Edge"].append(local / "Microsoft/Edge/User Data/Local State")
+        out["Brave"].append(local / "BraveSoftware/Brave-Browser/User Data/Local State")
+        ff = roaming / "Mozilla/Firefox/Profiles"
+    elif sys.platform == "darwin":
+        sup = home / "Library/Application Support"
+        out["Chrome"].append(sup / "Google/Chrome/Local State")
+        out["Edge"].append(sup / "Microsoft Edge/Local State")
+        out["Brave"].append(sup / "BraveSoftware/Brave-Browser/Local State")
+        ff = sup / "Firefox/Profiles"
+    else:
+        cfg = home / ".config"
+        out["Chrome"].append(cfg / "google-chrome/Local State")
+        out["Edge"].append(cfg / "microsoft-edge/Local State")
+        out["Brave"].append(cfg / "BraveSoftware/Brave-Browser/Local State")
+        ff = home / ".mozilla/firefox"
+    if ff.is_dir():
+        out["Firefox"] = sorted(ff.glob("*/prefs.js"))
+    return out
+
+
+def chromium_secure_dns_mode(local_state: str) -> str:
+    """ "secure" means the browser resolves names itself over HTTPS only."""
+    try:
+        data = json.loads(local_state)
+    except ValueError:
+        return ""
+    return str((data.get("dns_over_https") or {}).get("mode", ""))
+
+
+def firefox_trr_mode(prefs_js: str) -> int:
+    m = re.search(r'user_pref\("network\.trr\.mode",\s*(\d+)\);', prefs_js)
+    return int(m.group(1)) if m else 0
+
+
+def _windows_doh_policies() -> dict[str, str]:
+    if sys.platform != "win32":
+        return {}
+    import winreg
+
+    found = {}
+    for browser, key in (("Chrome", r"SOFTWARE\Policies\Google\Chrome"), ("Edge", r"SOFTWARE\Policies\Microsoft\Edge")):
+        for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                with winreg.OpenKey(hive, key) as k:
+                    found[browser] = str(winreg.QueryValueEx(k, "DnsOverHttpsMode")[0])
+            except OSError:
+                continue
+    return found
+
+
+def browser_dns_check(sentinel) -> Check:
+    """Browsers set to "secure DNS only" resolve websites themselves and may skip the hosts file that Web Shield's
+    system-wide blocking uses."""
+    bypass: list[str] = []
+    for browser, files in _browser_profiles().items():
+        for f in files:
+            try:
+                text = f.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if browser == "Firefox" and firefox_trr_mode(text) == 3:
+                bypass.append("Firefox (DNS over HTTPS: Max Protection)")
+                break
+            if browser != "Firefox" and chromium_secure_dns_mode(text) == "secure":
+                bypass.append(f"{browser} (Use secure DNS with a custom provider)")
+                break
+    for browser, mode in _windows_doh_policies().items():
+        if mode.lower() == "secure":
+            bypass.append(f"{browser} (set by policy)")
+    blocking = bool(getattr(sentinel.settings, "webshield_block_hosts", False))
+    if not bypass:
+        return Check(
+            "browser-dns",
+            "Website blocking reaches every browser",
+            PASS if blocking else INFO,
+            "No browser is set to bypass the system's name lookups"
+            + ("" if blocking else " (system-wide blocking is off)"),
+            "",
+            "recommended",
+        )
+    return Check(
+        "browser-dns",
+        "Website blocking reaches every browser",
+        WARN if blocking else INFO,
+        "May skip system-wide blocking: " + ", ".join(sorted(set(bypass))),
+        "These browsers look websites up themselves. To keep Web Shield's blocking in them, set their secure DNS "
+        "option to the automatic/default setting (Chrome/Edge: Settings → Privacy → Use secure DNS → With your "
+        "current service provider; Firefox: Settings → Privacy → DNS over HTTPS → Default Protection).",
+        "recommended",
+    )
+
+
 def run_checkup(sentinel, progress: Callable[[str], None] | None = None) -> list[Check]:
     say = progress or (lambda _m: None)
     checks: list[Check] = []
     say("Checking Sentinel Vision protection…")
     checks += _app_checks(sentinel)
+    try:
+        checks.append(browser_dns_check(sentinel))
+    except Exception as exc:
+        checks.append(
+            Check("browser-dns", "Website blocking reaches every browser", UNKNOWN, f"Could not check: {exc}")
+        )
     say("Checking operating-system security…")
     try:
         if sys.platform == "win32":

@@ -115,3 +115,29 @@ def test_full_checkup_runs_on_this_machine(sentinel):
     assert {"sv-realtime", "sv-autostart", "os-exposed"} <= ids
     assert all(c.status in ("pass", "warn", "fail", "unknown", "info") for c in checks)
     assert 0 <= advisor.score(checks) <= 100
+
+
+def test_browser_secure_dns_parsers():
+    from sentinel_vision.advisor import chromium_secure_dns_mode, firefox_trr_mode
+
+    assert chromium_secure_dns_mode('{"dns_over_https": {"mode": "secure", "templates": "https://x/dns"}}') == "secure"
+    assert chromium_secure_dns_mode('{"dns_over_https": {"mode": "automatic"}}') == "automatic"
+    assert chromium_secure_dns_mode("{}") == "" and chromium_secure_dns_mode("not json") == ""
+    assert firefox_trr_mode('user_pref("network.trr.mode", 3);\nuser_pref("x", 1);') == 3
+    assert firefox_trr_mode('user_pref("browser.startup", 1);') == 0
+
+
+def test_browser_dns_check_flags_browsers_that_bypass_blocking(sentinel, monkeypatch, tmp_path):
+    from sentinel_vision import advisor
+
+    chrome = tmp_path / "Local State"
+    chrome.write_text('{"dns_over_https": {"mode": "secure"}}')
+    ff = tmp_path / "prefs.js"
+    ff.write_text('user_pref("network.trr.mode", 2);')
+    monkeypatch.setattr(advisor, "_browser_profiles", lambda: {"Chrome": [chrome], "Firefox": [ff]})
+    monkeypatch.setattr(advisor, "_windows_doh_policies", lambda: {})
+    sentinel.settings.webshield_block_hosts = True
+    c = advisor.browser_dns_check(sentinel)
+    assert c.status == advisor.WARN and "Chrome" in c.detail and "Firefox" not in c.detail
+    chrome.write_text('{"dns_over_https": {"mode": "automatic"}}')
+    assert advisor.browser_dns_check(sentinel).status == advisor.PASS

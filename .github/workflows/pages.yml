@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - "site/**"
+      - "requirements/site.lock"
       - "docs/screenshots/**"
       - "packaging/assets/icon.png"
       - "src/sentinel_vision/__init__.py"
@@ -31,20 +32,20 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Install tools
         run: |
-          python -m pip install --quiet pillow playwright
+          python -m pip install --quiet --require-hashes -r requirements/site.lock
           python -m playwright install --with-deps chromium
           npm install --prefix "$RUNNER_TEMP/axe" --silent axe-core@4.10.3
       - name: Build and check links, images, alt text and contrast
         run: python site/build.py --check
       - name: Accessibility checks in a browser
         run: python site/check_a11y.py "$RUNNER_TEMP/axe/node_modules/axe-core/axe.min.js"
-      - uses: actions/upload-pages-artifact@v5
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site/public
 
@@ -60,4 +61,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

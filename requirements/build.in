@@ -1,0 +1,6 @@
+# Release builds install exactly the versions in build.lock, each checked against its SHA-256 (pip --require-hashes),
+# together with the dependencies declared in pyproject.toml. Regenerate (Dependabot also keeps it current):
+#   uv pip compile pyproject.toml requirements/build.in --universal --generate-hashes --python-version 3.12 \
+#       -o requirements/build.lock
+pyinstaller
+hatchling

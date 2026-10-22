@@ -31,6 +31,7 @@ dependencies = [
     "cryptography>=50",
     "platformdirs>=4.0",
     "certifi>=2024.2.2",
+    "pywin32>=308; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

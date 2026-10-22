@@ -213,8 +213,14 @@ LEDGER = [
         ("on", "On by default", "Every 6 hours, and when you click Update now"),
         "The publisher of each list: GitHub (YARA Forge, Phishing.Database), abuse.ch, Spamhaus, "
         "Proofpoint Emerging Threats, Phishing Army and OpenPhish",
-        "A request to download the list. If you add an abuse.ch key, it's included so abuse.ch can authorise "
-        "the download.",
+        "A request to download the list. The abuse.ch URLhaus and ThreatFox lists need a free abuse.ch key; if "
+        "you add one, it's included so abuse.ch can authorise the download.",
+    ),
+    (
+        "Firewall and website-blocking lists (Windows)",
+        ("on", "On by default", "Every 6 hours, by the protection service, while firewall or website blocking is on"),
+        "GitHub (Phishing.Database), abuse.ch, Spamhaus, Proofpoint Emerging Threats, Phishing Army and OpenPhish",
+        "A request to download the list. The service uses only lists that need no key.",
     ),
     (
         "ClamAV signature updates",
@@ -301,6 +307,16 @@ def index(sizes) -> str:
             "settings point to a known bad server.",
         ),
         (
+            "Tamper protection (Windows)",
+            "A protected service keeps the quarantine, the rollback vault and your protection settings out of reach "
+            "of other programs. Turning protection off needs administrator approval, and the app is restarted if "
+            "something closes it.",
+        ),
+        (
+            "Firewall blocking (Windows)",
+            "Known-malicious networks are blocked in Windows Firewall for the whole computer.",
+        ),
+        (
             "Signed updates",
             "Updates are signed with ML-DSA-65, a post-quantum algorithm standardised by NIST in "
             "FIPS 204, together with Ed25519. The app refuses an update that fails either check or is older than "
@@ -328,6 +344,11 @@ def index(sizes) -> str:
             "Registration with Windows Security",
             "Only members of Microsoft's Virus Initiative can register. Keep Microsoft Defender switched on alongside "
             "Sentinel Vision.",
+        ),
+        (
+            "Stop malware that already has administrator rights",
+            "A program running as administrator can stop any program without a kernel driver. Approve administrator "
+            "prompts only for programs you started yourself.",
         ),
         ("VPN, identity-theft insurance or credit monitoring", "These are paid services rather than software."),
     ]
@@ -546,11 +567,16 @@ def privacy() -> str:
     </ul>
     <p>These are stored in <code>%LOCALAPPDATA%\\SentinelVision</code> on Windows,
     <code>~/Library/Application Support/SentinelVision</code> on macOS and <code>~/.local/share/SentinelVision</code>
-    on Linux. The app can also add a start-at-sign-in entry, hidden decoy files in protected folders, and, only if
-    you turn on website blocking and approve the administrator prompt, entries in your system's hosts file.</p>
+    on Linux. On Windows, the quarantine, the rollback vault and your protection settings are kept in
+    <code>%ProgramData%\\SentinelVision\\Service</code>, which only the protection service and administrators can
+    open, with each account's data kept separate. The app can also add a start-at-sign-in entry and hidden decoy
+    files in protected folders. If you turn on website blocking it adds entries to your system's hosts file, and on
+    Windows the protection service adds firewall rules that block known-malicious networks (you can turn this
+    off).</p>
     <h3>Deleting it</h3>
-    <p>On Windows, the uninstaller removes the start-at-sign-in entry and the decoy files, removes website blocking (after asking for administrator permission),
-    then asks whether to delete the data folder too. On macOS and Linux, turn off the ransomware shield and website
+    <p>On Windows, the uninstaller removes the protection service, the start-at-sign-in entry, the decoy files,
+    website blocking and firewall blocking, then asks whether to delete the data too (for every account on the
+    computer). On macOS and Linux, turn off the ransomware shield and website
     blocking in the app, then delete the app and the folder above.</p>
 
     <h2>Your rights</h2>

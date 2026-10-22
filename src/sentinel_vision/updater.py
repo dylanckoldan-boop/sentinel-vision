@@ -64,11 +64,15 @@ class _HTTPSOnlyRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def download(url: str, headers: dict[str, str] | None = None, limit: int = MAX_DOWNLOAD) -> bytes:
+def download(
+    url: str, headers: dict[str, str] | None = None, limit: int = MAX_DOWNLOAD, body: bytes | None = None
+) -> bytes:
     if not url.lower().startswith("https://"):
         raise ValueError("only HTTPS feeds are allowed")
     opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=_ssl_context()), _HTTPSOnlyRedirect())
-    req = urllib.request.Request(url, headers={"User-Agent": f"SentinelVision/{__version__}", **(headers or {})})
+    req = urllib.request.Request(
+        url, data=body, headers={"User-Agent": f"SentinelVision/{__version__}", **(headers or {})}
+    )
     with opener.open(req, timeout=TIMEOUT) as resp:
         buf = io.BytesIO()
         while chunk := resp.read(1024 * 256):
@@ -163,7 +167,11 @@ class Updater:
         headers = {}
         if "abuse.ch" in url and self.settings.abusech_auth_key:
             headers["Auth-Key"] = self.settings.abusech_auth_key.strip()
-        data = download(url, headers)
+        body = None
+        if feed.kind == "threatfox_api":
+            body = b'{"query": "get_iocs", "days": 7}'
+            headers["Content-Type"] = "application/json"
+        data = download(url, headers, body=body)
         if feed.kind in ("domains_malware", "domains_phishing"):
             from sentinel_vision.webshield import parse_domain_list
 

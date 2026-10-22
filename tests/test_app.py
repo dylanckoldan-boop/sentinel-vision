@@ -99,3 +99,21 @@ def test_gui_builds_every_page(sentinel):
     win.tray.hide()
     win.deleteLater()
     app.processEvents()
+
+
+def test_abusech_key_round_trips_and_is_protected_on_windows(isolated_home, monkeypatch):
+    import sys
+
+    from sentinel_vision import secretbox
+
+    s = Settings()
+    s.abusech_auth_key = "KEY-123"
+    s.save()
+    raw = json.loads(Settings.path().read_text())["abusech_auth_key"]
+    if sys.platform == "win32":
+        assert raw.startswith(secretbox.PREFIX_DPAPI) and "KEY-123" not in raw
+    assert Settings.load().abusech_auth_key == "KEY-123"
+    # a protected value from another account/computer is dropped, never shown as garbage
+    raw_other = secretbox.PREFIX_DPAPI + "AAAA"
+    Settings.path().write_text(json.dumps({"abusech_auth_key": raw_other}))
+    assert Settings.load().abusech_auth_key == ""

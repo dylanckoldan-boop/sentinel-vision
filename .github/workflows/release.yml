@@ -26,7 +26,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: v
         shell: bash
         run: |
@@ -50,16 +50,33 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
       WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+      INNO_VERSION: "6.7.1"
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - name: Install build tools
+      - name: Install build tools (exact, hash-checked versions)
+        shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          pip install . pyinstaller
-          choco upgrade innosetup --no-progress -y
+          function Run-Logged([string]$Title, [scriptblock]$Cmd) {
+            $log = Join-Path $env:RUNNER_TEMP ("step-" + [guid]::NewGuid() + ".log")
+            & $Cmd *>&1 | Tee-Object -FilePath $log | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+              $tail = (Get-Content $log -Tail 25) -join "%0A"
+              Write-Host "::error title=$Title failed::$tail"
+              exit 1
+            }
+          }
+          Run-Logged "pip (locked)" { pip install --require-hashes -r requirements/build.lock }
+          Run-Logged "pip (project)" { pip install --no-deps --no-build-isolation . }
+          # Inno Setup pinned to one version (Chocolatey verifies the download's checksum)
+          $avail = (choco search innosetup --exact --all-versions --limit-output | Select-Object -First 8) -join ", "
+          Write-Host "::notice title=Inno Setup versions on Chocolatey::$avail"
+          Run-Logged "Inno Setup $env:INNO_VERSION" { choco install innosetup --version $env:INNO_VERSION --no-progress -y --allow-downgrade }
+          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup*\ISCC.exe", "$env:ProgramFiles\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $iscc) { Write-Host "::error title=Inno Setup::ISCC.exe not found"; exit 1 }
+          Write-Host "::notice title=Inno Setup::$($iscc.FullName) $((Get-Item $iscc.FullName).VersionInfo.ProductVersion)"
       - name: Build app (PyInstaller)
         run: pyinstaller --noconfirm packaging/sentinel_vision.spec
       - name: Sign executables (optional)
@@ -74,8 +91,7 @@ jobs:
       - name: Build installer (Inno Setup)
         shell: pwsh
         run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { $iscc = "$env:ProgramFiles\Inno Setup 6\ISCC.exe" }
+          $iscc = (Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup*\ISCC.exe", "$env:ProgramFiles\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
           & $iscc "/DAppVersion=$env:VERSION" packaging\windows\SentinelVision.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed with $LASTEXITCODE" }
       - name: Sign installer (optional)
@@ -94,7 +110,7 @@ jobs:
           Copy-Item "dist\installer\SentinelVision-$env:VERSION-Setup.exe" out\
           Compress-Archive -Path dist\SentinelVision -DestinationPath "out\SentinelVision-$env:VERSION-windows-portable.zip"
           Get-ChildItem out
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows
           path: out/*
@@ -103,121 +119,54 @@ jobs:
   windows-installer-test:
     needs: [version, windows]
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: packaging/windows
+          persist-credentials: false
+      # after the checkout, which empties the workspace
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows
           path: out
-      - name: Install, verify, upgrade, relaunch and uninstall
+      - name: Upgrade from the previous release, protection service, tamper protection, uninstall
+        timeout-minutes: 45
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          function Assert($cond, $msg) { if (-not $cond) { throw "ASSERTION FAILED: $msg" } else { Write-Host "OK  $msg" } }
-          function Invoke-Setup([string]$exe, [string[]]$arguments, [string]$label) {
-            # Start-Process -Wait would also wait for programs the installer launches (the app itself), so wait
-            # for the installer process only, with a timeout.
-            $proc = Start-Process $exe -ArgumentList $arguments -PassThru
-            $null = $proc.Handle
-            if (-not $proc.WaitForExit(300000)) { throw "$label did not finish within 5 minutes" }
-            if ($proc.ExitCode -ne 0) { throw "$label exit code $($proc.ExitCode)" }
-            Write-Host "OK  $label finished"
-          }
-          function Annotate([string]$text) {
-            # Surface diagnostics as a check-run annotation (readable without downloading logs).
-            $enc = $text.Replace('%', '%25').Replace("`r", '').Replace("`n", '%0A')
-            Write-Host "::error title=Windows installer test::$enc"
-          }
           try {
-          $setup = (Resolve-Path "out\SentinelVision-$env:VERSION-Setup.exe").Path
-          $app = Join-Path $env:LOCALAPPDATA 'Programs\Sentinel Vision'
-          $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-
-          Write-Host "== silent per-user install with start-at-sign-in and PATH"
-          Invoke-Setup $setup @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER','/TASKS="autostart,addtopath"','/LOG="install1.log"') "first install"
-          Assert (Test-Path "$app\SentinelVision.exe") "GUI executable installed"
-          Assert (Test-Path "$app\sentinel-vision-cli.exe") "CLI executable installed"
-          Assert (Test-Path "$app\unins000.exe") "uninstaller installed"
-          Assert (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Sentinel Vision.lnk") "Start menu shortcut created"
-          $run = (Get-ItemProperty $runKey).SentinelVision
-          Assert ($run -eq "`"$app\SentinelVision.exe`" --minimized") "start-at-sign-in registered: $run"
-          $userPath = (Get-ItemProperty 'HKCU:\Environment').Path
-          Assert ($userPath -like "*$app*") "install folder added to user PATH"
-
-          Write-Host "== command-line tool"
-          & "$app\sentinel-vision-cli.exe" --version
-          Assert ($LASTEXITCODE -eq 0) "cli --version"
-          $status = & "$app\sentinel-vision-cli.exe" status | Out-String
-          Write-Host $status
-          Assert ($LASTEXITCODE -eq 0) "cli status exit code 0"
-          Assert ($status -match 'start at sign-in:\s+on') "cli reports start at sign-in on"
-          $samples = Join-Path $env:RUNNER_TEMP 'samples'
-          New-Item -ItemType Directory -Force $samples | Out-Null
-          [IO.File]::WriteAllBytes("$samples\invoice.pdf.exe", [byte[]](@(0x4D,0x5A) + (,0 * 512)))
-          [IO.File]::WriteAllText("$samples\notes.txt", "hello")
-          & "$app\sentinel-vision-cli.exe" scan $samples --no-quarantine
-          Assert ($LASTEXITCODE -eq 1) "cli scan finds the disguised executable (exit code 1)"
-
-          Write-Host "== GUI starts hidden in the tray and stays running"
-          $gui = Start-Process "$app\SentinelVision.exe" -ArgumentList '--minimized' -PassThru
-          Start-Sleep -Seconds 25
-          Assert (-not $gui.HasExited) "GUI still running after 25 s"
-          $log = Join-Path $env:LOCALAPPDATA 'SentinelVision\logs\sentinel.log'
-          if (Test-Path $log) { Get-Content $log -Tail 40 }
-          if (Test-Path $log) { Assert (-not (Select-String -Path $log -Pattern 'Traceback' -Quiet)) "no Python tracebacks in the app log" }
-
-          $decoy = Join-Path ([Environment]::GetFolderPath('MyDocuments')) '!Budget 2026.docx'
-          if (Test-Path ([Environment]::GetFolderPath('MyDocuments'))) {
-            Assert (Test-Path -LiteralPath $decoy) "ransomware decoy planted in Documents"
-            $attrs = (Get-Item -LiteralPath $decoy -Force).Attributes
-            Assert (($attrs -band [IO.FileAttributes]::Hidden) -ne 0) "decoy is hidden"
-          }
-
-          Write-Host "== upgrade over the running app (installer must close it)"
-          Invoke-Setup $setup @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LOG="install2.log"') "upgrade over running app"
-          Start-Sleep -Seconds 3
-          Assert ($null -eq (Get-Process SentinelVision -ErrorAction SilentlyContinue)) "running app was closed for the upgrade"
-          Assert ((Get-ItemProperty $runKey).SentinelVision -eq "`"$app\SentinelVision.exe`" --minimized") "previous options kept on upgrade"
-
-          Write-Host "== self-update style install relaunches the app"
-          Invoke-Setup $setup @('/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/RELAUNCH=1','/LOG="install3.log"') "self-update style install"
-          Start-Sleep -Seconds 15
-          Assert ($null -ne (Get-Process SentinelVision -ErrorAction SilentlyContinue)) "app relaunched after /RELAUNCH=1 install"
-
-          Write-Host "== unticking start-at-sign-in on upgrade removes it"
-          Invoke-Setup $setup @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS="addtopath"','/LOG="install4.log"') "install without start-at-sign-in"
-          Assert ($null -eq (Get-ItemProperty $runKey -Name SentinelVision -ErrorAction SilentlyContinue)) "start-at-sign-in removed"
-
-          Write-Host "== silent uninstall"
-          & "$app\sentinel-vision-cli.exe" autostart on | Out-Host
-          Assert ($null -ne (Get-ItemProperty $runKey -Name SentinelVision -ErrorAction SilentlyContinue)) "app can turn start-at-sign-in on"
-          Invoke-Setup "$app\unins000.exe" @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') "uninstaller"
-          $deadline = (Get-Date).AddSeconds(90)
-          while ((Test-Path "$app\SentinelVision.exe") -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
-          Assert (-not (Test-Path "$app\SentinelVision.exe")) "program files removed"
-          Assert ($null -eq (Get-ItemProperty $runKey -Name SentinelVision -ErrorAction SilentlyContinue)) "start-at-sign-in removed by uninstaller"
-          $userPath = (Get-ItemProperty 'HKCU:\Environment').Path
-          Assert (-not ($userPath -like "*$app*")) "PATH entry removed"
-          Assert ($null -eq (Get-Process SentinelVision -ErrorAction SilentlyContinue)) "no app process left running"
-          Assert (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Sentinel Vision.lnk")) "Start menu shortcut removed"
-          Assert (-not (Test-Path -LiteralPath $decoy)) "ransomware decoys removed by the uninstaller"
-          Write-Host "Windows installer lifecycle: ALL CHECKS PASSED"
-          Write-Host "::notice title=Windows installer test::Install, CLI, GUI, upgrade, relaunch, option change and uninstall all passed"
+            & packaging/windows/test-installer.ps1 -Setup (Resolve-Path "out\SentinelVision-$env:VERSION-Setup.exe").Path
           } catch {
             $details = "$($_.Exception.Message)`n"
-            foreach ($f in @('install1.log','install2.log','install3.log','install4.log')) {
-              if (Test-Path $f) { $details += "--- $f (tail)`n" + ((Get-Content $f -Tail 15) -join "`n") + "`n" }
+            foreach ($f in @('prev-install.log','install1.log','install2.log','install3.log','install4.log')) {
+              if (Test-Path $f) { $details += "--- $f (tail)`n" + ((Get-Content $f -Tail 12) -join "`n") + "`n" }
             }
+            $svclog = Join-Path $env:ProgramData 'SentinelVision\Service\service.log'
+            if (Test-Path $svclog) { $details += "--- service.log (tail)`n" + ((Get-Content $svclog -Tail 25) -join "`n") + "`n" }
             $log = Join-Path $env:LOCALAPPDATA 'SentinelVision\logs\sentinel.log'
-            if (Test-Path $log) { $details += "--- sentinel.log (tail)`n" + ((Get-Content $log -Tail 25) -join "`n") }
-            Annotate $details
+            if (Test-Path $log) { $details += "--- sentinel.log (tail)`n" + ((Get-Content $log -Tail 20) -join "`n") }
+            $enc = $details.Replace('%', '%25').Replace("`r", '').Replace("`n", '%0A')
+            Write-Host "::error title=Windows installer test::$enc"
             throw
           }
+      - name: Where it stopped (if it timed out)
+        if: cancelled() || failure()
+        shell: pwsh
+        run: |
+          $details = ''
+          if (Test-Path progress.txt) { $details += "--- progress`n" + ((Get-Content progress.txt -Tail 8) -join "`n") + "`n" }
+          $svclog = Join-Path $env:ProgramData 'SentinelVision\Service\service.log'
+          if (Test-Path $svclog) { $details += "--- service.log (tail)`n" + ((Get-Content $svclog -Tail 15) -join "`n") + "`n" }
+          $hosts = Get-Item "$env:SystemRoot\System32\drivers\etc\hosts"
+          $details += "--- hosts file: $([math]::Round($hosts.Length / 1MB, 1)) MB`n"
+          $details += "--- processes: " + ((Get-Process SentinelVision, sentinel-vision-*, unins*, SentinelVision-* -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Name)($($_.Id))" }) -join ', ')
+          $enc = $details.Replace('%', '%25').Replace("`r", '').Replace("`n", '%0A')
+          Write-Host "::error title=Installer test diagnostics::$enc"
       - name: Upload installer logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: installer-logs
           path: "*.log"
@@ -238,8 +187,8 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       QT_QPA_PLATFORM: offscreen
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Qt runtime libraries (Linux)
@@ -247,7 +196,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libegl1 libxkbcommon0 libgl1 libfontconfig1 libdbus-1-3
-      - run: pip install . pyinstaller
+      - name: Install build tools (exact, hash-checked versions)
+        run: |
+          pip install --require-hashes -r requirements/build.lock
+          pip install --no-deps --no-build-isolation .
       - run: pyinstaller --noconfirm packaging/sentinel_vision.spec
       - name: Smoke test
         shell: bash
@@ -274,7 +226,7 @@ jobs:
             tar -C dist -czf "out/SentinelVision-$VERSION-linux-x86_64.tar.gz" SentinelVision
           fi
           ls -la out
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.name }}
           path: out/*
@@ -291,8 +243,8 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artifacts
           merge-multiple: true
@@ -322,7 +274,7 @@ jobs:
             echo "shows *Windows protected your PC* — click **More info → Run anyway**. See the README for details."
           } >> notes.md
           cat notes.md
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Post-quantum signature (ML-DSA-65 + Ed25519)
@@ -335,10 +287,10 @@ jobs:
             echo "::warning title=Release not signed::Add the SV_SIGNING_KEY repository secret (docs/CODE_SIGNING.md). Apps will not auto-install an unsigned release."
             exit 0
           fi
-          python -m pip install --quiet "cryptography>=50"
+          python -m pip install --quiet --require-hashes -r requirements/sign.lock
           python tools/pq_sign.py artifacts/SHA256SUMS.txt
           echo "::notice title=Release signed::SHA256SUMS.txt signed with ML-DSA-65 + Ed25519"
-      - uses: softprops/action-gh-release@v3
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: v${{ env.VERSION }}
           target_commitish: ${{ github.sha }}

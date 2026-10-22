@@ -202,6 +202,12 @@ class MainWindow(QMainWindow):
         self.app_update_timer.timeout.connect(self.check_app_update)
         self.app_update_timer.start(APP_UPDATE_INTERVAL_MS)
         self._first_app_check = self._one_shot(60_000, self.check_app_update)
+        self._service_task: Task | None = None
+        if self.sentinel.service is not None:
+            self.service_timer = QTimer(self)
+            self.service_timer.timeout.connect(self._service_tick)
+            self.service_timer.start(60_000)
+            self._one_shot(3000, self._service_tick)
 
         self.navigate("overview")
         self._update_status()
@@ -213,6 +219,24 @@ class MainWindow(QMainWindow):
         t.timeout.connect(fn)
         t.start(ms)
         return t
+
+    def _service_tick(self) -> None:
+        """Heartbeat to the protection service (it restarts the app if this stops) and show what it reported."""
+        if self._quitting or self._service_task is not None:
+            return
+        sv = self.sentinel
+        task = Task(lambda _t: sv.service_tick())
+        task.signals.finished.connect(self._service_events)
+        task.signals.failed.connect(lambda _e: setattr(self, "_service_task", None))
+        self._service_task = start(task)
+
+    def _service_events(self, events) -> None:
+        self._service_task = None
+        for ev in events or []:
+            if ev.get("kind") == "refused":
+                self.sentinel.alert("Protection change blocked", ev.get("detail", ""), "danger")
+            elif ev.get("kind") == "watchdog":
+                self.sentinel.alert("Sentinel Vision was restarted", ev.get("detail", ""), "warning")
 
     def stop_timers(self) -> None:
         for t in self.findChildren(QTimer):
@@ -481,6 +505,25 @@ class MainWindow(QMainWindow):
         QApplication.quit()
 
     def quit(self) -> None:
+        if self.sentinel.service is not None and self.sentinel.settings.keep_running:
+            # the protection service restarts the app unless protection is stopped with administrator approval
+            from sentinel_vision.protect import request_pause
+
+            if (
+                QMessageBox.question(
+                    self,
+                    "Quit Sentinel Vision",
+                    "Quitting stops Sentinel Vision's protection until you next sign in.\n\nWindows will ask for "
+                    "administrator permission, so other programs can't do this without you.",
+                    QMessageBox.Ok | QMessageBox.Cancel,
+                    QMessageBox.Cancel,
+                )
+                != QMessageBox.Ok
+            ):
+                return
+            if not request_pause(self.sentinel):
+                QMessageBox.information(self, "Quit Sentinel Vision", "Sentinel Vision keeps running.")
+                return
         self._quitting = True
         self.close()
 

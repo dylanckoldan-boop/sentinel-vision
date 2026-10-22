@@ -73,6 +73,62 @@ def looks_encrypted(head: bytes, ext: str) -> bool:
     return not head.startswith(fmt)
 
 
+ZIP_EXT = frozenset(e for e, m in FORMATS.items() if m and m[0] == b"PK\x03\x04")
+SAMPLE = 4096
+
+
+def _text_scrambled(block: bytes) -> bool:
+    if len(block) < 512:
+        return False
+    try:
+        block.decode("utf-8")
+        return False
+    except UnicodeDecodeError as exc:
+        if exc.start >= len(block) - 4:
+            return False
+    printable = sum(1 for b in block if 32 <= b < 127 or b in (9, 10, 13))
+    return printable / len(block) < 0.7 and shannon_entropy(block) > 6.5
+
+
+def damaged(head: bytes, mid: bytes, tail: bytes, ext: str) -> bool:
+    """Like :func:`looks_encrypted`, but also catches ransomware that leaves the start of a file intact and encrypts
+    only parts of it ("intermittent encryption"): the end of a zip-based document must still hold its central
+    directory, a PDF must still end with %%EOF, a PNG with IEND, and text must stay text throughout."""
+    if looks_encrypted(head, ext):
+        return True
+    if not head or not tail:
+        return False
+    if ext in ZIP_EXT:
+        return b"PK\x05\x06" not in tail  # end-of-central-directory record
+    if ext == "pdf":
+        return b"%%EOF" not in tail
+    if ext == "png":
+        return b"IEND" not in tail[-64:]
+    if FORMATS.get(ext, ...) is None and ext in FORMATS:
+        return _text_scrambled(mid) or _text_scrambled(tail)
+    return False
+
+
+def sample_file(path: str | Path, head_size: int = 65536) -> tuple[bytes, bytes, bytes]:
+    """Start, middle and end of a file (tail covers a zip comment of up to 64 KB)."""
+    with open(path, "rb") as fh:
+        head = fh.read(head_size)
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        if size <= head_size:
+            return head, head[len(head) // 2 : len(head) // 2 + SAMPLE], head[-66000:]
+        fh.seek(size // 2)
+        mid = fh.read(SAMPLE)
+        fh.seek(max(0, size - 66000))
+        tail = fh.read()
+    return head, mid, tail
+
+
+def damaged_bytes(data: bytes, ext: str) -> bool:
+    n = len(data)
+    return damaged(data[:65536], data[n // 2 : n // 2 + SAMPLE], data[-66000:], ext)
+
+
 @dataclass
 class Version:
     id: int
@@ -100,7 +156,109 @@ class VaultError(RuntimeError):
     pass
 
 
-class RollbackVault:
+class VaultFiles:
+    """File-level operations (snapshot, restore, rollback) on top of a storage back end.
+
+    The back end is either :class:`RollbackVault` (local storage) or the protected Windows service
+    (``service_client.RemoteVault``). Files are always read and written here, by the user's own process: the
+    service only stores and returns bytes, so it can never be used to write into places the user can't.
+    """
+
+    max_file: int
+    max_total: int
+
+    # storage back end ------------------------------------------------------------------------------------
+    def store(self, key: str, data: bytes, mtime: float, force: bool = False) -> Version | None:  # pragma: no cover
+        raise NotImplementedError
+
+    def read(self, version_id: int) -> tuple[Version, bytes]:  # pragma: no cover
+        raise NotImplementedError
+
+    def rollback_plan(self, since: float, folder_key: str = "") -> list[tuple[str, int | None]]:  # pragma: no cover
+        raise NotImplementedError
+
+    def versions(self, path: str | Path) -> list[Version]:  # pragma: no cover
+        raise NotImplementedError
+
+    # file operations -------------------------------------------------------------------------------------
+    @staticmethod
+    def _key(path: str | Path) -> str:
+        return os.path.normcase(os.path.abspath(str(path)))
+
+    def eligible(self, path: str | Path) -> bool:
+        return extension(path) in VERSIONED_EXT
+
+    def snapshot(self, path: str | Path, force: bool = False) -> Version | None:
+        """Store the current content of ``path`` if it changed. Returns the new version, or None.
+
+        Content that looks encrypted is refused unless ``force`` (used to preserve the current file before a
+        restore overwrites it)."""
+        p = Path(path)
+        try:
+            st = p.stat()
+        except OSError:
+            return None
+        if not p.is_file() or st.st_size > self.max_file or (not force and not self.eligible(p)):
+            return None
+        try:
+            data = p.read_bytes()
+        except OSError:
+            return None
+        return self.store(self._key(p), data, st.st_mtime, force)
+
+    def restore(self, version_id: int, dest: str | Path | None = None) -> Path:
+        """Write a stored version back. The file it replaces is kept in the vault first, so a restore can be
+        undone."""
+        v, data = self.read(version_id)
+        target = Path(dest) if dest else Path(v.path)
+        if target.is_dir():
+            target = target / Path(v.path).name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            self.snapshot(target, force=True)
+        tmp = target.with_name(f".{target.name}.svrestore")
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | O_BIN, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, target)
+        try:
+            os.utime(target, (v.mtime, v.mtime))
+        except OSError:
+            pass
+        return target
+
+    def rollback(self, since: float, folder: str | Path | None = None) -> list[tuple[str, str]]:
+        """Restore every file changed at or after ``since`` (optionally only inside ``folder``) to its newest
+        good version from before ``since``. Returns (path, result) pairs."""
+        results: list[tuple[str, str]] = []
+        for path, vid in self.rollback_plan(since, self._key(folder) if folder else ""):
+            if vid is None:
+                results.append((path, "no earlier version"))
+                continue
+            try:
+                self.restore(vid)
+                results.append((path, "restored"))
+            except (OSError, VaultError) as exc:
+                results.append((path, f"failed: {exc}"))
+        return results
+
+    def restore_latest_good(self, paths: list[str]) -> list[tuple[str, str]]:
+        """Restore each path to its newest stored version (used after an attack was detected)."""
+        out = []
+        for p in paths:
+            vs = [v for v in self.versions(p) if not v.suspect]
+            if not vs:
+                out.append((p, "no stored version"))
+                continue
+            try:
+                self.restore(vs[0].id)
+                out.append((p, "restored"))
+            except (OSError, VaultError) as exc:
+                out.append((p, f"failed: {exc}"))
+        return out
+
+
+class RollbackVault(VaultFiles):
     def __init__(
         self, root: Path | None = None, max_file_mb: int = 50, max_total_mb: int = 5120, keep_versions: int = 10
     ) -> None:
@@ -163,35 +321,16 @@ class RollbackVault:
             raise VaultError("stored copy does not match its hash")
         return data
 
-    # ------------------------------------------------------------------ snapshots
-    @staticmethod
-    def _key(path: str | Path) -> str:
-        return os.path.normcase(os.path.abspath(str(path)))
-
-    def eligible(self, path: str | Path) -> bool:
-        return extension(path) in VERSIONED_EXT
-
-    def snapshot(self, path: str | Path, force: bool = False) -> Version | None:
-        """Store the current content of ``path`` if it changed. Returns the new version, or None.
-
-        Content that looks encrypted is refused unless ``force`` (used to preserve the current file before a
-        restore overwrites it)."""
-        p = Path(path)
-        try:
-            st = p.stat()
-        except OSError:
+    # ------------------------------------------------------------------ storage
+    def store(self, key: str, data: bytes, mtime: float, force: bool = False) -> Version | None:
+        """Keep ``data`` as the newest version of ``key`` (a normalised path) unless it is unchanged, too large, or
+        looks encrypted (refused unless ``force``)."""
+        if len(data) > self.max_file:
             return None
-        if not p.is_file() or st.st_size > self.max_file or (not force and not self.eligible(p)):
-            return None
-        try:
-            data = p.read_bytes()
-        except OSError:
-            return None
-        suspect = looks_encrypted(data[:65536], extension(p))
+        suspect = damaged_bytes(data, extension(key))
         if suspect and not force:
             return None
         sha = hashlib.sha256(data).hexdigest()
-        key = self._key(p)
         with self._lock:
             last = self._db.execute(
                 "SELECT sha256 FROM versions WHERE path=? ORDER BY ts DESC, id DESC LIMIT 1", (key,)
@@ -202,12 +341,39 @@ class RollbackVault:
             now = time.time()
             cur = self._db.execute(
                 "INSERT INTO versions(path, sha256, size, mtime, ts, suspect) VALUES (?, ?, ?, ?, ?, ?)",
-                (key, sha, len(data), st.st_mtime, now, int(suspect)),
+                (key, sha, len(data), float(mtime), now, int(suspect)),
             )
             self._db.commit()
             vid = int(cur.lastrowid)
             self._prune(key)
-        return Version(vid, key, sha, len(data), st.st_mtime, now, int(suspect))
+        return Version(vid, key, sha, len(data), float(mtime), now, int(suspect))
+
+    def read(self, version_id: int) -> tuple[Version, bytes]:
+        v = self.get(version_id)
+        return v, self._get_blob(v.sha256)
+
+    def rollback_plan(self, since: float, folder_key: str = "") -> list[tuple[str, int | None]]:
+        prefix = folder_key.rstrip(os.sep) + os.sep if folder_key else ""
+        with self._lock:
+            changed = [r[0] for r in self._db.execute("SELECT DISTINCT path FROM versions WHERE ts >= ?", (since,))]
+            plan: list[tuple[str, int | None]] = []
+            for path in sorted(changed):
+                if prefix and not path.startswith(prefix):
+                    continue
+                row = self._db.execute(
+                    "SELECT id FROM versions WHERE path=? AND ts < ? AND suspect=0 ORDER BY ts DESC, id DESC LIMIT 1",
+                    (path, since),
+                ).fetchone()
+                plan.append((path, int(row[0]) if row else None))
+        return plan
+
+    def all_versions(self) -> list[Version]:
+        """Every stored version, oldest first (used to move a local vault into the protected service)."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, path, sha256, size, mtime, ts, suspect FROM versions ORDER BY ts ASC, id ASC"
+            ).fetchall()
+        return [Version(*r) for r in rows]
 
     def _prune(self, key: str | None = None) -> None:
         with self._lock:
@@ -273,66 +439,3 @@ class RollbackVault:
         if not row:
             raise VaultError("unknown version")
         return Version(*row)
-
-    # ------------------------------------------------------------------ restore
-    def restore(self, version_id: int, dest: str | Path | None = None) -> Path:
-        """Write a stored version back. The file it replaces is kept in the vault first, so a restore can be
-        undone."""
-        v = self.get(version_id)
-        data = self._get_blob(v.sha256)
-        target = Path(dest) if dest else Path(v.path)
-        if target.is_dir():
-            target = target / Path(v.path).name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            self.snapshot(target, force=True)
-        tmp = target.with_name(f".{target.name}.svrestore")
-        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | O_BIN, 0o600)
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-        os.replace(tmp, target)
-        try:
-            os.utime(target, (v.mtime, v.mtime))
-        except OSError:
-            pass
-        return target
-
-    def rollback(self, since: float, folder: str | Path | None = None) -> list[tuple[str, str]]:
-        """Restore every file changed at or after ``since`` (optionally only inside ``folder``) to its newest
-        good version from before ``since``. Returns (path, result) pairs."""
-        prefix = self._key(folder).rstrip(os.sep) + os.sep if folder else ""
-        with self._lock:
-            changed = [r[0] for r in self._db.execute("SELECT DISTINCT path FROM versions WHERE ts >= ?", (since,))]
-        results: list[tuple[str, str]] = []
-        for path in sorted(changed):
-            if prefix and not path.startswith(prefix):
-                continue
-            with self._lock:
-                row = self._db.execute(
-                    "SELECT id FROM versions WHERE path=? AND ts < ? AND suspect=0 ORDER BY ts DESC, id DESC LIMIT 1",
-                    (path, since),
-                ).fetchone()
-            if not row:
-                results.append((path, "no earlier version"))
-                continue
-            try:
-                self.restore(row[0])
-                results.append((path, "restored"))
-            except (OSError, VaultError) as exc:
-                results.append((path, f"failed: {exc}"))
-        return results
-
-    def restore_latest_good(self, paths: list[str]) -> list[tuple[str, str]]:
-        """Restore each path to its newest stored version (used after an attack was detected)."""
-        out = []
-        for p in paths:
-            vs = [v for v in self.versions(p) if not v.suspect]
-            if not vs:
-                out.append((p, "no stored version"))
-                continue
-            try:
-                self.restore(vs[0].id)
-                out.append((p, "restored"))
-            except (OSError, VaultError) as exc:
-                out.append((p, f"failed: {exc}"))
-        return out

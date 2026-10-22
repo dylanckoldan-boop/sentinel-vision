@@ -50,6 +50,57 @@ class Page(QWidget):
     def refresh(self) -> None:
         """Called when the page becomes visible and periodically while visible."""
 
+    def commit_settings(self, apply: bool = True) -> bool:
+        """Save (and apply) the settings. On Windows with the protection service, a change that reduces protection
+        needs administrator approval; if the user doesn't give it, the change is undone. Returns True if saved."""
+        return commit_settings(self, self.s, apply)
+
+
+def commit_settings(parent: QWidget, sentinel: Sentinel, apply: bool = True) -> bool:
+    import threading
+
+    from PySide6.QtCore import QEventLoop, QTimer
+    from PySide6.QtWidgets import QMessageBox
+
+    from sentinel_vision.core import ProtectionChangeNeedsAdmin
+    from sentinel_vision.protect import request_change
+    from sentinel_vision.servicecore import label
+
+    try:
+        if apply:
+            sentinel.apply_settings()
+        else:
+            sentinel.save_settings()
+        return True
+    except ProtectionChangeNeedsAdmin as exc:
+        names = ", ".join(label(f) for f in exc.fields)
+        answer = QMessageBox.question(
+            parent,
+            "Administrator approval needed",
+            f"This change reduces your protection ({names}).\n\nTo stop other programs from switching protection "
+            "off, Windows will ask for administrator permission, and Sentinel Vision will then show exactly what "
+            "will change.",
+            QMessageBox.Ok | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        ok = False
+        if answer == QMessageBox.Ok:
+            result: list[bool] = []
+            worker = threading.Thread(target=lambda: result.append(request_change(sentinel)), daemon=True)
+            worker.start()
+            loop = QEventLoop()
+            timer = QTimer()
+            timer.timeout.connect(lambda: loop.quit() if not worker.is_alive() else None)
+            timer.start(100)
+            loop.exec()
+            timer.stop()
+            ok = bool(result and result[0])
+        if not ok:
+            sentinel.reload_protected_settings()
+        if apply:
+            sentinel.apply_runtime()
+        return ok
+
 
 def make_table(model, stretch_col: int | None = None) -> QTableView:
     t = QTableView()

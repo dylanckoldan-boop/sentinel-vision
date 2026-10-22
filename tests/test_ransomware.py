@@ -248,3 +248,36 @@ def test_planting_never_overwrites_a_user_file(shield):
     assert target.read_bytes() == b"user data"
     assert not sh.is_canary(str(target))
     assert len(sh.canaries) == len(CANARY_NAMES) - 1
+
+
+def test_intermittent_encryption_with_intact_header_is_detected():
+    from sentinel_vision.vault import damaged_bytes
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("word/document.xml", "<w>" + "text " * 60000 + "</w>")
+    good = buf.getvalue()
+    assert len(good) > 200_000 and not damaged_bytes(good, "docx")
+    # header and first 64 KB untouched, the rest encrypted (how "intermittent" ransomware works)
+    bad = good[:70_000] + os.urandom(len(good) - 70_000)
+    assert damaged_bytes(bad, "docx")
+
+    pdf = b"%PDF-1.7\n" + b"1 0 obj << >> endobj\n" * 5000 + b"trailer\n%%EOF\n"
+    assert not damaged_bytes(pdf, "pdf")
+    assert damaged_bytes(pdf[:70_000] + os.urandom(len(pdf) - 70_000), "pdf")
+
+    text = ("Meeting notes, quarterly figures and plans.\n" * 4000).encode()
+    assert not damaged_bytes(text, "txt")
+    n = len(text)
+    assert damaged_bytes(text[: n // 2] + os.urandom(n - n // 2), "txt")
+
+
+def test_slow_encryption_below_the_burst_rate_still_trips(shield, monkeypatch):
+    from sentinel_vision import ransomware
+
+    sh, folder = shield
+    monkeypatch.setattr(ransomware, "BURST_THRESHOLD", 10_000)  # pretend each file is minutes apart
+    sh.settings.ransomware_auto_suspend = False
+    for i in range(ransomware.SLOW_THRESHOLD):
+        sh._record_transform(str(folder / f"doc{i}.docx"))
+    assert sh.incidents and sh.incidents[-1].trigger == "slow-encryption"

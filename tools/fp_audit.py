@@ -6,7 +6,8 @@ Usage:
 Runs in report-only mode (nothing is quarantined) with an isolated data directory. Prints a Markdown
 report (also appended to $GITHUB_STEP_SUMMARY in CI). Exit code 1 when detections of the --fail-on
 class are found:
-    signature  hash / ClamAV / YARA high+critical hits (default — these would be auto-quarantined)
+    signature  anything the app would quarantine automatically with default settings (default)
+    threat     ...or show as a threat (items to review — hints only — are allowed)
     any        any detection, heuristics included
     never      always exit 0
 """
@@ -21,7 +22,10 @@ import time
 from collections import Counter
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+try:  # audit the installed package (so it recognises its own files), else the source tree
+    import sentinel_vision  # noqa: F401
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def main() -> int:
@@ -29,7 +33,7 @@ def main() -> int:
     ap.add_argument("paths", nargs="+")
     ap.add_argument("--update", action="store_true", help="download YARA Forge rules first")
     ap.add_argument("--max-files", type=int, default=0, help="stop after N files (0 = no limit)")
-    ap.add_argument("--fail-on", choices=["signature", "any", "never"], default="signature")
+    ap.add_argument("--fail-on", choices=["signature", "threat", "any", "never"], default="signature")
     args = ap.parse_args()
 
     os.environ.setdefault("SENTINEL_VISION_HOME", tempfile.mkdtemp(prefix="sv-fp-audit-"))
@@ -48,22 +52,20 @@ def main() -> int:
 
     engines = ", ".join(f"{n} ({t})" for n, ok, t in sv.scanner.engine_status() if ok)
     started = time.time()
-    scanned = 0
     findings = []
-    for path in sv.scanner.iter_files(args.paths):
-        if args.max_files and scanned >= args.max_files:
-            break
-        res = sv.scanner.scan_file(path, act=False, use_cache=False)[0]
-        scanned += 1
-        if res.infected:
-            findings.append(res)
+    summary = sv.scanner.scan_paths(
+        args.paths,
+        on_result=lambda r: findings.append(r) if r.infected else None,
+        use_cache=False,
+        max_files=args.max_files,
+        act=False,
+    )
+    scanned = summary.scanned
 
-    def is_sig(r) -> bool:
-        # "signature-grade" = what the app would remove automatically with default settings
-        return sv.scanner.should_quarantine(r)
-
-    sig = [r for r in findings if is_sig(r)]
-    heur = [r for r in findings if not is_sig(r)]
+    # what the app would remove automatically with default settings
+    sig = [r for r in findings if sv.scanner.should_quarantine(r)]
+    threats = [r for r in findings if r not in sig and not r.needs_review_only]
+    review = [r for r in findings if r.needs_review_only]
     by_name = Counter(d.name for r in findings for d in r.detections)
 
     lines = [
@@ -72,13 +74,14 @@ def main() -> int:
         f"- Platform: `{sys.platform}` · scanned **{scanned:,}** files in {time.time() - started:,.0f}s",
         f"- Paths: {', '.join(f'`{p}`' for p in args.paths)}",
         f"- Engines: {engines}",
-        f"- Detections that would be auto-quarantined with default settings: **{len(sig)}**",
-        f"- Report-only detections (heuristics, signed or OS files): **{len(heur)}**",
+        f"- Would be auto-quarantined with default settings: **{len(sig)}**",
+        f"- Shown as threats (reported, not quarantined): **{len(threats)}**",
+        f"- Shown as items to review (hints only): **{len(review)}**",
         "",
     ]
     if findings:
         lines += ["| File | Detections |", "|---|---|"]
-        for r in findings[:300]:
+        for r in sorted(findings, key=lambda r: (r not in sig, r.needs_review_only, r.path))[:300]:
             dets = "; ".join(f"{d.engine}: {d.name} ({d.severity.label})" for d in r.detections)
             lines.append(f"| `{r.path}` | {dets} |")
         lines += ["", "Top detection names:", ""]
@@ -88,8 +91,12 @@ def main() -> int:
     if os.environ.get("GITHUB_ACTIONS"):
         # annotations are readable from the API and the run page without opening logs
         brief = [
-            f"{scanned:,} files · would quarantine: {len(sig)} · report-only: {len(heur)}",
-            *[f"{r.path}: " + "; ".join(f"{d.engine}:{d.name}" for d in r.detections) for r in findings[:15]],
+            f"{scanned:,} files · would quarantine: {len(sig)} · threats: {len(threats)} · review: {len(review)}",
+            *[
+                f"{'Q' if r in sig else ('R' if r.needs_review_only else 'T')} {r.path}: "
+                + "; ".join(f"{d.engine}:{d.name}" for d in r.detections)
+                for r in sorted(findings, key=lambda r: (r not in sig, r.needs_review_only, r.path))[:25]
+            ],
         ]
         level = "error" if sig else "notice"
         enc = "\n".join(brief).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
@@ -103,6 +110,8 @@ def main() -> int:
         return 0
     if args.fail_on == "any":
         return 1 if findings else 0
+    if args.fail_on == "threat":
+        return 1 if (sig or threats) else 0
     return 1 if sig else 0
 
 

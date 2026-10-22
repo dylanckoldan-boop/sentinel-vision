@@ -41,7 +41,8 @@ def _c(code: str, text: str) -> str:
 
 def _print_result(r: ScanResult) -> None:
     if r.infected:
-        print(_c(RED, f"[THREAT] {r.path}"))
+        label = "[REVIEW]" if r.needs_review_only else "[THREAT]"
+        print(_c(YEL if r.needs_review_only else RED, f"{label} {r.path}"))
         for d in r.detections:
             print(f"         {d.engine:<10} {d.name}  ({d.severity.label})")
         print(f"         action: {r.action}")
@@ -50,12 +51,12 @@ def _print_result(r: ScanResult) -> None:
 
 
 def _summary(s: ScanSummary) -> None:
-    color = RED if s.infected else GRN
+    color = RED if s.threats else (YEL if s.review else GRN)
     print(
         _c(
             color,
             f"\n{s.scanned:,} files scanned ({bytes_human(s.bytes)}) in {s.duration:.1f}s — "
-            f"{s.infected} infected, {s.errors} errors, {s.skipped} skipped",
+            f"{s.threats} threat(s), {s.review} to review, {s.errors} errors, {s.skipped} skipped",
         )
     )
 
@@ -76,12 +77,15 @@ def cmd_scan(sv: Sentinel, args) -> int:
             p = sv.scanner.scan_processes(on_result=on, cancel=cancel)
             s.scanned += p.scanned
             s.infected += p.infected
+            s.review += p.review
     if args.json:
         print(
             json.dumps(
                 {
                     "scanned": s.scanned,
                     "infected": s.infected,
+                    "threats": s.threats,
+                    "review": s.review,
                     "errors": s.errors,
                     "duration": s.duration,
                     "results": [
@@ -89,6 +93,7 @@ def cmd_scan(sv: Sentinel, args) -> int:
                             "path": r.path,
                             "sha256": r.sha256,
                             "action": r.action,
+                            "review_only": r.needs_review_only,
                             "error": r.error,
                             "detections": [
                                 {
@@ -111,7 +116,7 @@ def cmd_scan(sv: Sentinel, args) -> int:
             for r in results:
                 _print_result(r)
         _summary(s)
-    return 1 if s.infected else 0
+    return 1 if s.threats else 0  # items to review (hints) alone do not fail the command
 
 
 def cmd_update(sv: Sentinel, _args) -> int:
@@ -211,11 +216,24 @@ def cmd_daemon(sv: Sentinel, _args) -> int:
     return 0
 
 
-def cmd_autostart(_sv: Sentinel, args) -> int:
+def cmd_autostart(sv: Sentinel, args) -> int:
     from sentinel_vision import autostart
 
     if args.state in ("on", "off"):
         autostart.set_enabled(args.state == "on")
+        if sv.service is not None:
+            # with the protection service this also means "restart it if it is closed"
+            from sentinel_vision.core import ProtectionChangeNeedsAdmin
+
+            sv.settings.keep_running = args.state == "on"
+            try:
+                sv.save_settings()
+            except ProtectionChangeNeedsAdmin:
+                sv.reload_protected_settings()
+                print(
+                    "Note: the protection service will still start Sentinel Vision at sign-in. Turning that off "
+                    "needs administrator approval (Protection page → Start at sign-in)."
+                )
     st = autostart.status()
     scope = f" ({st.scope})" if st.enabled else ""
     print(f"Start at sign-in: {'on' if st.enabled else 'off'}{scope}")
@@ -310,6 +328,24 @@ def cmd_webshield(sv: Sentinel, args) -> int:
     if args.action == "status":
         print(f"Known malicious/phishing domains: {sv.domains.count():,}")
         print(f"System-wide blocking: {webshield.hosts_status():,} domains in {webshield.hosts_path()}")
+        return 0
+    if sv.service is not None:
+        # Windows with the protection service: it applies the blocking from its own lists, no prompt to turn
+        # it on; turning it off needs administrator approval
+        from sentinel_vision.core import ProtectionChangeNeedsAdmin
+        from sentinel_vision.protect import request_change
+
+        if args.action == "refresh":
+            print(sv.service.call("system.refresh")[0] or "System-wide blocking is off.")
+            return 0
+        sv.settings.webshield_block_hosts = args.action == "enable"
+        try:
+            sv.save_settings()
+        except ProtectionChangeNeedsAdmin:
+            if not request_change(sv):
+                print("Not changed (administrator approval was not given).")
+                return 3
+        print(f"System-wide blocking {'on' if args.action == 'enable' else 'off'}.")
         return 0
     if args.action == "enable":
         sv.settings.webshield_block_hosts = True
@@ -456,6 +492,42 @@ def cmd_uninstall_cleanup(sv: Sentinel, _args) -> int:
     return 0
 
 
+def cmd_service(sv: Sentinel, args) -> int:
+    if sv.service is None:
+        print("The protection service is not running (it is part of the Windows installer).")
+        return 1
+    if getattr(args, "self_test", False):
+        from sentinel_vision.servicecore import ServiceError, policy_from_settings
+
+        if sv.service.call("ping")[0].get("elevated"):
+            print("Running with administrator rights: changes are allowed, so the refusal can't be tested here.")
+            print("Run this again from a normal (not elevated) window.")
+            return 0
+        probe = policy_from_settings(sv.settings)
+        probe["exclusions"] = [*probe.get("exclusions", []), "C:\\SentinelVision-self-test"]
+        try:
+            sv.service.call("policy.set", {"policy": probe})
+        except ServiceError as exc:
+            if exc.code == "elevation_required":
+                print("Tamper protection: OK (a change that weakens protection was refused without approval)")
+                return 0
+            raise
+        print("Tamper protection: FAILED (a weakening change was accepted without approval)")
+        return 1
+    st = sv.service.call("status")[0]
+    files, versions, used = sv.vault.stats()
+    print(f"Protection service {st['version']} running for {st['uptime'] / 3600:.1f} h")
+    print(f"  rollback vault:   {files:,} files, {versions:,} versions, {bytes_human(used)} (protected storage)")
+    print(f"  quarantine:       {len(sv.quarantine.list())} item(s) (protected storage)")
+    g, sysst = st.get("global") or {}, st.get("system") or {}
+    hosts_on = "on" if g.get("webshield_block_hosts") else "off"
+    print(f"  website blocking: {hosts_on} ({sysst.get('hosts_entries', 0):,} entries)")
+    print(
+        f"  firewall:         {'on' if g.get('firewall_block') else 'off'} ({sysst.get('firewall_rules', 0)} rule(s))"
+    )
+    return 0
+
+
 def cmd_status(sv: Sentinel, _args) -> int:
     print(f"{APP_NAME} {__version__}")
     for name, ok, text in sv.scanner.engine_status():
@@ -514,6 +586,8 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("url", nargs="?")
     sub.add_parser("password-check", help="check whether a password appeared in data breaches (k-anonymity)")
     sub.add_parser("uninstall-cleanup", help=argparse.SUPPRESS)
+    svc = sub.add_parser("service", help="status of the Windows protection service")
+    svc.add_argument("--self-test", action="store_true", help="check that other programs can't weaken protection")
     vr = sub.add_parser("verify-release", help="verify downloaded release files (post-quantum signature + SHA-256)")
     vr.add_argument("folder", nargs="?", default=".")
     sh = sub.add_parser("shred", help="securely delete files or folders")
@@ -535,6 +609,11 @@ def _safe_console() -> None:
 def main(argv: list[str] | None = None) -> int:
     _safe_console()
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in ("protect-apply", "protect-pause"):
+        # elevated helper started after the user approved Windows' administrator prompt
+        from sentinel_vision.protect import privileged_main
+
+        return privileged_main(argv)
     if argv and argv[0] in ("webshield-apply", "webshield-remove"):
         # privileged helper invoked through UAC / pkexec / osascript: no Sentinel instance, hosts file only
         try:
@@ -571,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
             "shred": cmd_shred,
             "verify-release": cmd_verify_release,
             "uninstall-cleanup": cmd_uninstall_cleanup,
+            "service": cmd_service,
         }[args.command]
         return handler(sv, args)
     except KeyboardInterrupt:

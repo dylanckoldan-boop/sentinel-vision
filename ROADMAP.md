@@ -29,18 +29,21 @@ comment there before starting so work isn't duplicated.
 | Memory scan, USB auto-scan, scheduled scans, camera/mic alerts, password breach check, shredder, quiet mode | 0.3.0 |
 | Opt-in cloud hash reputation (MalwareBazaar, CIRCL) | 0.3.0 |
 | Weekly live integration tests of every feed and service | 0.3.0 |
+| Protected Windows service: tamper protection, protected vault and quarantine, admin approval to weaken protection, watchdog | 0.4.0 |
+| Machine-wide firewall blocking of malicious networks; Program Files install | 0.4.0 |
+| Intermittent and slow ransomware encryption detection; threats vs items to review | 0.4.0 |
 
 ## Next — can be built by contributors
 
 | Item | Notes |
 |---|---|
+| **Service for macOS and Linux** | A root `launchd` / `systemd` helper giving the same tamper protection as the Windows service. |
 | **Linux on-access blocking with fanotify** | `FAN_OPEN_EXEC_PERM` permission events let the daemon block execution of a malicious file *before* it runs. Needs root (`CAP_SYS_ADMIN`); ship as an optional system service. |
 | **Per-process bandwidth** | Windows: ETW `Microsoft-Windows-Kernel-Network` (admin); Linux: eBPF or `/proc/<pid>/net` + cgroups; macOS: `nettop` parsing. Today the graph is system-wide. |
 | **macOS code-signature verification** | Use `codesign --verify` / `SecStaticCodeCheckValidity` like the Windows Authenticode check. |
 | **Intel Mac and Windows-on-ARM builds** | Add an Intel macOS runner and a Windows ARM64 runner to the release matrix (PySide6 ships `win_arm64` wheels). |
 | **Translations** | Wrap UI strings with Qt's `tr()` and add `.ts` files. |
 | **Linux packages** | `.deb`, `.rpm` and Flatpak packaging. |
-| **Privileged helper service** | A small always-running admin service would let Web Shield refresh blocking without a prompt, and protect the rollback vault from ransomware running with the user's rights. |
 | **macOS camera/microphone attribution** | macOS doesn't expose which app uses the camera; investigate the private `ControlCenter` / log-stream signals. |
 | **Browser extension** | Warn on phishing pages by URL path (the hosts file can only block whole host names). |
 | **macOS `.dmg` installer** | Drag-to-Applications disk image instead of a zip. |

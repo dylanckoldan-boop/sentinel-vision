@@ -83,7 +83,8 @@ class QuarantinePage(Page):
                 self.s.db.log_event("quarantine", f"Restored {item.threat} to {p}", "warning")
             except Exception as exc:
                 errors.append(f"{item.original_path}: {exc}")
-        self.s.settings.save()
+        if done and not self.commit_settings(apply=False):
+            errors.append("The restored files were not added to the exclusions (administrator approval was not given).")
         self.refresh()
         msg = ""
         if done:

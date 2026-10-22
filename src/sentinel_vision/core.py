@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from logging.handlers import RotatingFileHandler
 
+from sentinel_vision import service_client
 from sentinel_vision.advisor import NetGuard
 from sentinel_vision.behavior import BehaviorMonitor
 from sentinel_vision.config import Settings, sub_dir
@@ -20,6 +21,7 @@ from sentinel_vision.ransomware import RansomwareShield
 from sentinel_vision.realtime import RealtimeProtection
 from sentinel_vision.reputation import ReputationService
 from sentinel_vision.scanner import Scanner, ScanSummary
+from sentinel_vision.servicecore import ServiceError, apply_policy, policy_from_settings
 from sentinel_vision.updater import Updater
 from sentinel_vision.vault import RollbackVault
 from sentinel_vision.webshield import DomainIntel
@@ -40,12 +42,28 @@ def setup_logging(verbose: bool = False) -> None:
 Alert = Callable[[str, str, str], None]  # (title, text, level: info | warning | danger)
 
 
+class ProtectionChangeNeedsAdmin(Exception):
+    """The change weakens protection; the protection service only accepts it with administrator approval."""
+
+    def __init__(self, fields: list[str], message: str) -> None:
+        super().__init__(message)
+        self.fields = fields
+
+
 class Sentinel:
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, use_service: bool = True, service=None) -> None:
         self.settings = settings or Settings.load()
         s = self.settings
         self.db = Database()
-        self.quarantine = Quarantine()
+        # Windows: the protection service keeps the vault, quarantine and protection settings out of reach of
+        # other programs. Elsewhere (or if it isn't installed) they live in the user's own data folder.
+        self.service = service if service is not None else (service_client.connect() if use_service else None)
+        self.migrated: tuple[int, int] = (0, 0)
+        if self.service is not None:
+            self._attach_service()
+            self.quarantine = service_client.RemoteQuarantine(self.service)
+        else:
+            self.quarantine = Quarantine()
         self.scanner = Scanner(s, self.db, self.quarantine)
         self.reputation = ReputationService(s, self.db)
         self.scanner.reputation = self.reputation
@@ -55,7 +73,10 @@ class Sentinel:
         self.realtime = RealtimeProtection(self.scanner)
         self.updater = Updater(s, self.db, self.intel, self.domains)
         self.behavior = BehaviorMonitor(self.scanner, s)
-        self.vault = RollbackVault(max_total_mb=s.vault_max_mb, keep_versions=s.vault_keep_versions)
+        if self.service is not None:
+            self.vault = service_client.RemoteVault(self.service)
+        else:
+            self.vault = RollbackVault(max_total_mb=s.vault_max_mb, keep_versions=s.vault_keep_versions)
         self.ransomware = RansomwareShield(s, self.db, self.vault)
         self.drives = DriveWatcher(self._on_drive)
         self.privacy = PrivacyMonitor(self._on_device_use)
@@ -66,6 +87,81 @@ class Sentinel:
         self._engine_key = self._current_engine_key()
         self._watch_key: tuple | None = None
         self._rw_key: tuple | None = None
+        self._events_since = time.time()
+
+    # ------------------------------------------------------------------ protection service
+    def _global_from_settings(self) -> dict:
+        return {
+            "webshield_block_hosts": self.settings.webshield_block_hosts,
+            "firewall_block": self.settings.firewall_block,
+        }
+
+    def _attach_service(self) -> None:
+        log = logging.getLogger(__name__)
+        t = self.service
+        try:
+            self.migrated = service_client.migrate_local_data(t, sub_dir("vault"), sub_dir("quarantine"))
+            if any(self.migrated):
+                self.db.log_event(
+                    "service",
+                    f"Moved {self.migrated[0]} document version(s) and {self.migrated[1]} quarantined file(s) "
+                    "into the protected storage",
+                )
+        except Exception:
+            log.exception("moving local data into the protection service failed (kept locally)")
+        r = t.call("policy.get")[0]
+        if not r.get("policy"):
+            from sentinel_vision import autostart
+
+            try:  # carry over the user's existing start-at-sign-in choice
+                self.settings.keep_running = bool(autostart.is_enabled())
+            except Exception:
+                log.debug("could not read the start-at-sign-in setting", exc_info=True)
+            # first start for this account: register its own settings. Machine-wide blocking is only sent where it
+            # adds protection (another account may already have turned it on; turning it off needs approval).
+            g = r.get("global") or {}
+            first_global = {k: v for k, v in self._global_from_settings().items() if v and not g.get(k)}
+            t.call("policy.set", {"policy": policy_from_settings(self.settings), "global": first_global})
+            self.db.log_event("service", "Protection settings are now guarded by the protection service")
+            r = t.call("policy.get")[0]
+        apply_policy(self.settings, r["policy"])  # the protected copy wins over the settings file
+        g = r.get("global") or {}
+        self.settings.webshield_block_hosts = bool(g.get("webshield_block_hosts", False))
+        self.settings.firewall_block = bool(g.get("firewall_block", False))
+
+    def save_settings(self) -> None:
+        """Save settings. With the protection service, a change that weakens protection raises
+        :class:`ProtectionChangeNeedsAdmin` and nothing is saved."""
+        if self.service is not None:
+            try:
+                self.service.call(
+                    "policy.set",
+                    {"policy": policy_from_settings(self.settings), "global": self._global_from_settings()},
+                )
+            except ServiceError as exc:
+                if exc.code == "elevation_required":
+                    raise ProtectionChangeNeedsAdmin(list(exc.extra.get("fields", [])), str(exc)) from exc
+                raise
+        self.settings.save()
+
+    def reload_protected_settings(self) -> None:
+        """Undo unsaved changes to protected settings (after the user declined the administrator prompt)."""
+        if self.service is not None:
+            r = self.service.call("policy.get")[0]
+            apply_policy(self.settings, r.get("policy") or {})
+            g = r.get("global") or {}
+            self.settings.webshield_block_hosts = bool(g.get("webshield_block_hosts", False))
+            self.settings.firewall_block = bool(g.get("firewall_block", True))
+
+    def service_tick(self) -> list[dict]:
+        """Heartbeat to the protection service; returns new events for this user (refused changes, restarts)."""
+        if self.service is None:
+            return []
+        self.service.call("heartbeat")
+        events = self.service.call("events", {"since": self._events_since})[0]["events"]
+        if events:
+            self._events_since = max(e["ts"] for e in events)
+        return events
 
     # ------------------------------------------------------------------ alerts
     def alert(self, title: str, text: str, level: str = "info") -> None:
@@ -116,8 +212,13 @@ class Sentinel:
         self._rw_key = rw_key
 
     def apply_settings(self) -> None:
-        """Persist settings and re-apply them to running subsystems after the user changes them."""
-        self.settings.save()
+        """Persist settings and re-apply them to running subsystems after the user changes them.
+        Raises :class:`ProtectionChangeNeedsAdmin` (nothing applied) when the change needs administrator approval."""
+        self.save_settings()
+        self.apply_runtime()
+
+    def apply_runtime(self) -> None:
+        """Re-apply the current settings to running subsystems (no saving)."""
         key = self._current_engine_key()
         if key != self._engine_key:  # rebuilding compiles every YARA rule, so only do it when needed
             self.scanner.build_engines()
@@ -145,18 +246,14 @@ class Sentinel:
         self.vault.close()
         self.domains.close()
         self.db.close()
+        if self.service is not None:
+            self.service.close()
 
     # ------------------------------------------------------------------ devices & schedules
     def scan_drive(self, mountpoint: str) -> ScanSummary:
         self.db.log_event("usb", f"Scanning new drive {mountpoint}")
         summary = self.scanner.scan_paths([mountpoint], origin="usb", max_files=50000)
-        level = "danger" if summary.infected else "info"
-        self.alert(
-            "Drive scanned",
-            f"{mountpoint}: {summary.scanned:,} files, {summary.infected} threat(s)"
-            + (" — removed to quarantine" if summary.infected else ""),
-            level,
-        )
+        self.alert("Drive scanned", f"{mountpoint}: {summary.scanned:,} files, {_outcome(summary)}", _level(summary))
         return summary
 
     def _on_drive(self, mountpoint: str) -> None:
@@ -188,10 +285,23 @@ class Sentinel:
                 if kind == "quick":
                     proc = self.scanner.scan_processes()
                     summary.infected += proc.infected
+                    summary.review += proc.review
+                    summary.results += proc.results
+                mem_note = ""
+                if kind == "full" and self.settings.schedule_memory_scan:
+                    from sentinel_vision import memscan
+
+                    mem = memscan.scan_processes(self.scanner)
+                    if mem.hits:
+                        names = ", ".join(f"{h.name} ({h.pid})" for h in mem.hits[:5])
+                        mem_note = f"; memory scan: {len(mem.hits)} suspicious program(s): {names}"
+                        self.db.log_event("memscan", f"Scheduled memory scan: {names}", "warning")
+                    else:
+                        mem_note = f"; memory of {mem.scanned} programs checked, nothing found"
                 self.alert(
                     f"Scheduled {kind} scan finished",
-                    f"{summary.scanned:,} files checked, {summary.infected} threat(s) found",
-                    "danger" if summary.infected else "info",
+                    f"{summary.scanned:,} files checked, {_outcome(summary)}{mem_note}",
+                    "warning" if mem_note.startswith("; memory scan:") and not summary.threats else _level(summary),
                 )
             finally:
                 self.scheduled_running = ""
@@ -199,3 +309,22 @@ class Sentinel:
 
         threading.Thread(target=work, name=f"scheduled-{kind}", daemon=True).start()
         return [kind]
+
+
+def _outcome(summary: ScanSummary) -> str:
+    """Plain wording for a finished scan: what was found and what was actually done about it."""
+    if not summary.infected:
+        return "no threats found"
+    quarantined = sum(1 for r in summary.results if r.action == "quarantined")
+    parts = []
+    if summary.threats:
+        parts.append(f"{summary.threats} threat(s) found")
+    if summary.review:
+        parts.append(f"{summary.review} item(s) to review")
+    if quarantined:
+        parts.append(f"{quarantined} moved to quarantine")
+    return ", ".join(parts)
+
+
+def _level(summary: ScanSummary) -> str:
+    return "danger" if summary.threats else ("warning" if summary.review else "info")

@@ -16,6 +16,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from sentinel_vision import policy
 from sentinel_vision.config import Settings, data_dir
 from sentinel_vision.db import Database
 from sentinel_vision.engines import authenticode
@@ -76,10 +77,18 @@ class ScanResult:
     skipped: str = ""
     action: str = ""  # "", "quarantined", "reported", "quarantine failed: ..."
     origin: str = "scan"
+    kind: str = ""  # policy.file_kind: "program" | "script" | "data"
+    where: str = ""  # policy.location: "program" | "appdata" | "user"
+    in_archive: bool = False  # a member of an archive (can't run until someone extracts it)
 
     @property
     def infected(self) -> bool:
         return bool(self.detections)
+
+    @property
+    def needs_review_only(self) -> bool:
+        """Only hints (machine-generated rules, dual-use tools, signed software): worth a look, not a threat."""
+        return bool(self.detections) and all(d.details.get("report_only") for d in self.detections)
 
     @property
     def top(self) -> Detection | None:
@@ -89,7 +98,8 @@ class ScanResult:
 @dataclass
 class ScanSummary:
     scanned: int = 0
-    infected: int = 0
+    infected: int = 0  # files with any finding (threats + items to review)
+    review: int = 0  # of which: hints only
     errors: int = 0
     skipped: int = 0
     bytes: int = 0
@@ -97,6 +107,10 @@ class ScanSummary:
     finished: float = 0.0
     cancelled: bool = False
     results: list[ScanResult] = field(default_factory=list)  # only infected/error results are kept
+
+    @property
+    def threats(self) -> int:
+        return self.infected - self.review
 
     @property
     def duration(self) -> float:
@@ -210,8 +224,11 @@ class Scanner:
         res.detections, errs = self.scan_object(obj)
         if errs:
             res.error = "; ".join(errs)
+        res.kind = policy.file_kind(obj.head, obj.name)
+        res.where = policy.location(str(p))
         self._drop_generated_rule_noise(res)
         self._apply_publisher_trust(obj, res)
+        self._apply_location_context(res)
         self._apply_cloud_reputation(obj, res, origin)
 
         member_results: list[ScanResult] = []
@@ -220,7 +237,13 @@ class Scanner:
                 member_results = list(self._scan_archive(obj, depth=1, origin=origin))
             except ArchiveLimitError as exc:
                 res.detections.append(
-                    Detection("archive", "Archive.Bomb", Severity.MEDIUM, f"Archive exceeds safety limits: {exc}")
+                    Detection(
+                        "archive",
+                        "Archive.Bomb",
+                        Severity.LOW,
+                        f"Archive exceeds safety limits, so it was not checked completely: {exc}",
+                        {"report_only": True},
+                    )
                 )
             except Exception as exc:
                 log.debug("archive walk failed for %s: %s", p, exc)
@@ -315,6 +338,12 @@ class Scanner:
                 r.detections, errs = self.scan_object(member)
                 if errs:
                     r.error = "; ".join(errs)
+                # the same calm-results rules as for files on disk; the archive's own folder decides the context
+                r.kind = policy.file_kind(member.head, name)
+                r.where = policy.location(display)
+                r.in_archive = True
+                self._drop_generated_rule_noise(r)
+                self._apply_location_context(r)
                 yield r
                 yield from self._scan_archive(member, depth + 1, origin)
         finally:
@@ -368,37 +397,86 @@ class Scanner:
 
     @staticmethod
     def _apply_publisher_trust(obj: ScanObject, res: ScanResult) -> None:
-        """Pattern (YARA) hits on a program with a valid, trusted publisher signature (Windows Authenticode) are
-        reported but not acted on automatically: broad community rules occasionally match legitimate signed
-        software. Exact matches (hash / ClamAV) are never softened."""
-        pattern_hits = [d for d in res.detections if d.engine == "yara" and d.severity >= Severity.HIGH]
-        if not pattern_hits or obj.fs_path is None or obj.head[:2] != b"MZ":
+        """A program with a valid, trusted publisher signature (Windows Authenticode, including catalog signing):
+
+        * heuristic guesses and report-only hints (generated rules, dual-use tools) are dropped: installers,
+          launchers, VPN clients and security tools trip them constantly;
+        * strong pattern (YARA) hits on operating-system files are dropped; elsewhere they are reported, not
+          acted on automatically.
+
+        Exact matches (known-malware hash, ClamAV, cloud lookup) are never softened: stolen certificates exist."""
+        soft = [d for d in res.detections if d.engine not in EXACT_ENGINES]
+        if not soft or obj.fs_path is None or obj.head[:2] != b"MZ":
             return
         if authenticode.verify(str(obj.fs_path)) is not Signature.VALID:
             return
+        dropped = [d for d in soft if d.engine == "heuristics" or d.details.get("report_only")]
+        pattern_hits = [d for d in soft if d.engine == "yara" and d.severity >= Severity.HIGH and d not in dropped]
         if is_system_path(res.path):
-            # A validly signed operating-system component: broad community rules matching it are noise.
-            for d in pattern_hits:
-                log.info("ignoring %s on signed system file %s", d.name, res.path)
-            res.detections = [d for d in res.detections if d not in pattern_hits]
-            return
+            dropped += pattern_hits
+            pattern_hits = []
+        for d in dropped:
+            log.info("ignoring %s on validly signed %s", d.name, res.path)
+        res.detections = [d for d in res.detections if d not in dropped]
         for d in pattern_hits:
             d.severity = Severity.MEDIUM
             d.description += " (file has a valid publisher signature — reported, not quarantined)"
             d.details["signed"] = True
+            d.details["report_only"] = True
+
+    @staticmethod
+    def _apply_location_context(res: ScanResult) -> None:
+        """Installed programs' folders and the operating system can only be changed with administrator rights, and
+        their scripts, add-ins, libraries and test data trip patterns and heuristics constantly (Office's own
+        JavaScript, Git's runtime, automation tools that generate PowerShell, browser resource bundles). There:
+
+        * heuristic guesses below High are not shown;
+        * other pattern and heuristic findings are shown as items to review, never as threats;
+        * exact matches (known-malware hash, ClamAV, cloud lookup) stay threats and are acted on as usual.
+
+        App data and package caches (AppData, ProgramData, ~/Library, ~/.cache…): archives, packages and other data
+        there (update packages, extension bundles, package-manager caches) are never run as they are, so pattern
+        and heuristic findings in them are items to review. Programs and scripts there stay threats."""
+        if not res.detections:
+            return
+        if res.where == "appdata" and (res.kind == "data" or res.in_archive):
+            for d in res.detections:
+                if d.engine not in EXACT_ENGINES and not d.details.get("report_only"):
+                    d.details["report_only"] = True
+                    d.description += " (in an app's data or package cache: reported for review)"
+            return
+        if not (res.where == "program" or is_system_path(res.path)):
+            return
+        quiet = [d for d in res.detections if d.engine == "heuristics" and d.severity < Severity.HIGH]
+        for d in quiet:
+            log.info("ignoring %s in installed program folder %s", d.name, res.path)
+        res.detections = [d for d in res.detections if d not in quiet]
+        for d in res.detections:
+            if d.engine not in EXACT_ENGINES and not d.details.get("report_only"):
+                d.details["report_only"] = True
+                d.description += " (in an installed program's folder: reported for review)"
 
     # ------------------------------------------------------------------ actions
     def should_quarantine(self, res: ScanResult) -> bool:
         s = self.settings
         if not s.auto_quarantine:
             return False
-        if is_system_path(res.path) and not any(d.engine in EXACT_ENGINES for d in res.detections):
-            # Operating-system files are only removed automatically on an exact (hash / ClamAV) match; a pattern
-            # or heuristic hit there is far more likely a false positive, and removing it could break the OS.
+        actionable = [d for d in res.detections if not d.details.get("report_only")]
+        if not actionable:
+            return False  # hints only (generated rules, dual-use tools, signed software)
+        if any(d.engine in EXACT_ENGINES for d in actionable):
+            return True  # known-malware hash / ClamAV signature / cloud hash match
+        if is_system_path(res.path):
+            # Operating-system files are only removed automatically on an exact match; a pattern or heuristic hit
+            # there is far more likely a false positive, and removing it could break the OS.
             return False
-        if any(d.is_signature for d in res.detections):
+        if res.where == "program":
+            return False  # installed software (admin-only folder): report, let the user decide
+        if res.where == "appdata" and res.kind == "data":
+            return False  # caches and app databases are never run; a pattern match in them is reported only
+        if any(d.is_signature for d in actionable):
             return True
-        return s.auto_quarantine_heuristics and any(d.severity >= Severity.HIGH for d in res.detections)
+        return s.auto_quarantine_heuristics and any(d.severity >= Severity.HIGH for d in actionable)
 
     def _act(self, res: ScanResult) -> None:
         top = res.top
@@ -472,7 +550,9 @@ class Scanner:
         origin: str = "scan",
         use_cache: bool = True,
         max_files: int = 0,
+        act: bool = True,
     ) -> ScanSummary:
+        """``act=False`` reports only (nothing is quarantined or recorded) — used by the false-positive audit."""
         summary = ScanSummary()
         cancel = cancel or threading.Event()
         lock = threading.Lock()
@@ -493,6 +573,8 @@ class Scanner:
                     summary.errors += 1
                 if top.infected:
                     summary.infected += 1
+                    if top.needs_review_only:
+                        summary.review += 1
                 if top.infected or top.error:
                     summary.results.append(top)
                 n = summary.scanned
@@ -508,7 +590,7 @@ class Scanner:
                     break
                 if cancel.is_set():
                     break
-                inflight.add(pool.submit(self.scan_file, path, origin, True, use_cache))
+                inflight.add(pool.submit(self.scan_file, path, origin, act, use_cache))
                 if len(inflight) >= max_inflight:
                     done, inflight = wait(inflight, return_when=FIRST_COMPLETED)
                     for f in done:
@@ -597,6 +679,8 @@ class Scanner:
                     "critical",
                 )
                 summary.infected += 1
+                if res.needs_review_only:
+                    summary.review += 1
                 summary.results.append(res)
                 if on_result:
                     on_result(res)

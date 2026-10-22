@@ -40,7 +40,7 @@ from sentinel_vision.engines import authenticode
 from sentinel_vision.engines.authenticode import Signature
 from sentinel_vision.engines.base import Severity
 from sentinel_vision.scanner import is_system_path
-from sentinel_vision.vault import VERSIONED_EXT, RollbackVault, extension, looks_encrypted
+from sentinel_vision.vault import VERSIONED_EXT, RollbackVault, damaged, extension, sample_file
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +50,9 @@ _DECOYS = ("!Budget 2026.docx", "!Accounts.xlsx", "zz Notes.txt")
 CANARY_NAMES = _DECOYS if sys.platform == "win32" else tuple("." + n for n in _DECOYS)
 BURST_WINDOW = 20.0
 BURST_THRESHOLD = 8
+# slow ransomware spreads its work out to stay under the burst threshold
+SLOW_WINDOW = 600.0
+SLOW_THRESHOLD = 20
 TRIP_COOLDOWN = 60.0
 SUSPEND_SCORE = 50
 MAX_SUSPECTS = 3
@@ -206,6 +209,7 @@ class RansomwareShield:
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._transforms: deque[tuple[float, str]] = deque()
+        self._slow: deque[tuple[float, str]] = deque()
         self._last_trip = 0.0
         self._io_prev: dict[int, tuple[float, int]] = {}
         self._io_rate: dict[int, float] = {}
@@ -359,11 +363,10 @@ class RansomwareShield:
             src = dest
         if kind in ("modified", "created") and self.vault.eligible(src):
             try:
-                with open(src, "rb") as fh:
-                    head = fh.read(65536)
+                head, mid, tail = sample_file(src)
             except OSError:
                 return
-            if looks_encrypted(head, extension(src)):
+            if damaged(head, mid, tail, extension(src)):
                 if self.vault.versions(src) or kind == "modified":
                     self._record_transform(src)
                 return
@@ -382,14 +385,26 @@ class RansomwareShield:
     def _record_transform(self, path: str) -> None:
         now = time.monotonic()
         self._transforms.append((now, path))
+        self._slow.append((now, path))
         while self._transforms and now - self._transforms[0][0] > BURST_WINDOW:
             self._transforms.popleft()
+        while self._slow and now - self._slow[0][0] > SLOW_WINDOW:
+            self._slow.popleft()
         if len(self._transforms) >= BURST_THRESHOLD:
             files = [p for _, p in self._transforms]
             self._transforms.clear()
+            self._slow.clear()
             self.trip(
                 "mass-encryption",
                 f"{len(files)} documents were encrypted or renamed within {BURST_WINDOW:.0f} s",
+                files,
+            )
+        elif len({p for _, p in self._slow}) >= SLOW_THRESHOLD:
+            files = sorted({p for _, p in self._slow})
+            self._slow.clear()
+            self.trip(
+                "slow-encryption",
+                f"{len(files)} documents were encrypted or renamed within {SLOW_WINDOW / 60:.0f} minutes",
                 files,
             )
 

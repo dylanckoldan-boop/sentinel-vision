@@ -142,3 +142,56 @@ def test_clamd_instream_protocol(tmp_path, eicar):
     assert eng.scan(ScanObject("e", data=eicar))[0].name == "Eicar-Test-Signature"
     assert eng.scan(ScanObject("c", data=b"clean" * 100000)) == []
     srv.close()
+
+
+def test_threatfox_api_and_urlhaus_csv_parsers():
+    from sentinel_vision.network.threatintel import parse_threatfox_json
+    from sentinel_vision.webshield import parse_domain_list
+
+    tf = (
+        '{"query_status": "ok", "data": ['
+        '{"ioc": "198.51.100.7:443", "ioc_type": "ip:port", "malware": "win.cobalt_strike"},'
+        '{"ioc": "evil.example.com", "ioc_type": "domain"},'
+        '{"ioc": "[2001:db8::5]:8080", "ioc_type": "ip:port"}]}'
+    )
+    nets = parse_threatfox_json(tf)
+    assert any(n.startswith("198.51.100.7") for n in nets) and len(nets) == 2
+    assert parse_threatfox_json('{"query_status": "no_result"}') == []
+    assert parse_threatfox_json("not json") == []
+
+    csv_text = (
+        "################################################################\n"
+        "# id,dateadded,url,url_status,last_online,threat,tags,urlhaus_link,reporter\n"
+        '"3301","2026-10-21 10:00:00","http://malware-host.example/bin.exe","online","","malware_download",'
+        '"exe","https://urlhaus.abuse.ch/url/3301/","anon"\n'
+        '"3302","2026-10-21 10:01:00","https://second.example.net:8443/a","online","","malware_download","",'
+        '"https://urlhaus.abuse.ch/url/3302/","anon"\n'
+    )
+    hosts = parse_domain_list(csv_text)
+    assert "malware-host.example" in hosts and "second.example.net" in hosts
+    assert "urlhaus.abuse.ch" not in hosts  # only the first URL on each row is the indicator
+    # older formats keep working
+    assert parse_domain_list("0.0.0.0 bad.example.org\nphish.example.com\n") == ["bad.example.org", "phish.example.com"]
+
+
+def test_saved_builtin_feeds_follow_new_definitions(isolated_home):
+    import json
+
+    from sentinel_vision.config import Settings
+
+    s = Settings()
+    s.save()
+    data = json.loads(Settings.path().read_text())
+    for f in data["feeds"]:
+        if f["name"] == "URLhaus malware sites":
+            f["url"], f["kind"], f["requires_key"], f["enabled"] = (
+                "https://urlhaus.abuse.ch/downloads/hostfile/",
+                "domains_malware",
+                False,
+                False,
+            )
+    Settings.path().write_text(json.dumps(data))
+    loaded = next(f for f in Settings.load().feeds if f.name == "URLhaus malware sites")
+    assert loaded.url.startswith("https://urlhaus-api.abuse.ch/") and loaded.requires_key
+    assert loaded.enabled is False  # the user's choice is kept
+    assert Settings.load().feed_url(loaded) is None  # no key: skipped with a clear message

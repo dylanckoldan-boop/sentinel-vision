@@ -125,9 +125,21 @@ def normalize_host(text: str) -> str:
     return t if DOMAIN_RE.match(t) else ""
 
 
+URL_IN_LINE = re.compile(r"(?i)\bhttps?://[^\s\"',<>]+")
+
+
 def parse_domain_list(text: str) -> list[str]:
+    """Hosts files, plain domain lists, URL lists and CSV exports with a URL column (e.g. URLhaus)."""
     out = []
     for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        m = URL_IN_LINE.search(line)
+        if m:
+            h = normalize_host(m.group(0))
+            if h:
+                out.append(h)
+            continue
         line = line.split("#", 1)[0].strip()
         if not line or line.startswith(("!", "[")):
             continue
@@ -385,6 +397,8 @@ def strip_block(text: str) -> str:
 def apply_hosts(hosts: list[str], path: Path | None = None) -> int:
     """Write (or replace) the managed block. Requires administrator/root. Returns entries written."""
     path = path or hosts_path()
+    # a very large hosts file makes name look-ups slow for every program, so the block is always capped
+    hosts = list(dict.fromkeys(h for h in hosts if blockable(h)))[:MAX_HOSTS_ENTRIES]
     original = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
     base = strip_block(original)
     if base and not base.endswith("\n"):
@@ -491,7 +505,7 @@ def run_elevated(args: list[str]) -> int:
         info.nShow = 0
         if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(info)):  # type: ignore[attr-defined]
             raise OSError("administrator permission was not granted")
-        ctypes.windll.kernel32.WaitForSingleObject(info.hProcess, 120000)  # type: ignore[attr-defined]
+        ctypes.windll.kernel32.WaitForSingleObject(info.hProcess, 600000)  # type: ignore[attr-defined]  # time to read the confirmation
         code = wintypes.DWORD()
         ctypes.windll.kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code))  # type: ignore[attr-defined]
         ctypes.windll.kernel32.CloseHandle(info.hProcess)  # type: ignore[attr-defined]

@@ -107,18 +107,23 @@ rule SV_Ransom_Note
 rule SV_CoinMiner_Config
 {
     meta:
-        description = "Cryptocurrency miner configuration or binary"
+        description = "Cryptocurrency miner configuration (mining pool plus miner settings)"
         severity = "high"
         author = "Sentinel Vision"
     strings:
-        $s1 = "stratum+tcp://" ascii wide
-        $s2 = "stratum+ssl://" ascii wide
-        $x1 = "xmrig" nocase ascii wide
-        $x2 = "\"donate-level\"" ascii
-        $x3 = "randomx" nocase ascii wide
-        $x4 = "cryptonight" nocase ascii wide
+        // a real pool endpoint "stratum+tcp://host.tld:port", not just the scheme mentioned in text
+        $pool = /stratum\+(tcp|ssl|tls):\/\/[a-zA-Z0-9.-]{3,64}\.[a-zA-Z]{2,10}:[0-9]{2,5}/ ascii wide
+        $j_pools = /"pools"\s*:\s*\[/ ascii
+        $j_url = /"url"\s*:\s*"stratum\+/ ascii
+        $j_donate = /"donate-level"\s*:\s*[0-9]/ ascii
+        $j_algo = /"algo"\s*:\s*"(rx|cn|randomx|cryptonight|kawpow|ethash)/ nocase ascii
+        $cli_donate = /--donate-level[= ][0-9]/ ascii wide
+        $cli_algo = /--algo[= ](rx|cn|randomx|cryptonight|kawpow|ethash)/ nocase ascii wide
     condition:
-        1 of ($s*) and 1 of ($x*)
+        filesize < 20MB and $pool and (
+            ($j_pools and $j_url and ($j_donate or $j_algo)) or
+            ($cli_donate and $cli_algo)
+        )
 }
 
 rule SV_HackTool_Mimikatz

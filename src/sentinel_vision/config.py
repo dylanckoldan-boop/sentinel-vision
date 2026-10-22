@@ -100,9 +100,10 @@ DEFAULT_FEEDS: list[Feed] = [
     ),
     Feed(
         "ThreatFox recent IOCs",
-        "https://threatfox.abuse.ch/export/csv/ip-port/recent/",
-        "ip_port",
-        description="Recent malware C2 ip:port indicators from ThreatFox.",
+        "https://threatfox-api.abuse.ch/api/v1/",
+        "threatfox_api",
+        requires_key=True,
+        description="Malware command-and-control servers seen in the last 7 days (abuse.ch). Free Auth-Key required.",
     ),
     Feed(
         "Spamhaus DROP",
@@ -118,9 +119,10 @@ DEFAULT_FEEDS: list[Feed] = [
     ),
     Feed(
         "URLhaus malware sites",
-        "https://urlhaus.abuse.ch/downloads/hostfile/",
+        "https://urlhaus-api.abuse.ch/v2/files/exports/{abusech_key}/recent.csv",
         "domains_malware",
-        description="Websites currently distributing malware (abuse.ch).",
+        requires_key=True,
+        description="Websites currently distributing malware (abuse.ch). Free Auth-Key required.",
     ),
     Feed(
         "Phishing.Database active domains",
@@ -229,12 +231,15 @@ class Settings:
     # web shield
     webshield_enabled: bool = True  # download malicious/phishing domain lists for the link checker & monitor
     webshield_block_hosts: bool = False  # also block them system-wide via the hosts file (needs administrator)
+    firewall_block: bool = True  # Windows: the protection service blocks known criminal networks in the firewall
+    keep_running: bool = True  # Windows: the protection service starts the app at sign-in and restarts it if closed
 
     # cloud reputation (sends SHA-256 hashes only, never files)
     cloud_lookup: bool = False
 
     # devices & schedules
     usb_autoscan: bool = True
+    schedule_memory_scan: bool = True  # also check running programs' memory during the weekly full scan
     schedule_quick_daily: bool = True
     schedule_full_weekly: bool = True
     schedule_hour: int = 12  # local hour for scheduled scans
@@ -284,20 +289,29 @@ class Settings:
                 and not (isinstance(default, float) and isinstance(v, int))
             ):
                 continue  # ignore wrongly typed values
+            if k == "abusech_auth_key":
+                from sentinel_vision import secretbox
+
+                v = secretbox.unprotect(v)
             setattr(s, k, v)
         # feeds added in newer versions appear for people upgrading with saved settings
         known_feeds = {f.name for f in s.feeds}
         s.feeds += [Feed(**asdict(f)) for f in DEFAULT_FEEDS if f.name not in known_feeds]
-        # built-in feeds keep the current description (licence notes can change); the user's on/off choice stays
+        # built-in feeds follow the current definition (publishers move their downloads; licence notes change);
+        # the user's on/off choice stays
         defaults = {f.name: f for f in DEFAULT_FEEDS}
         for f in s.feeds:
-            if f.name in defaults:
-                f.description = defaults[f.name].description
+            d = defaults.get(f.name)
+            if d is not None:
+                f.url, f.kind, f.requires_key, f.description = d.url, d.kind, d.requires_key, d.description
         return s
 
     def save(self) -> None:
         data = {f.name: getattr(self, f.name) for f in fields(self)}
         data["feeds"] = [asdict(f) for f in self.feeds]
+        from sentinel_vision import secretbox
+
+        data["abusech_auth_key"] = secretbox.protect(self.abusech_auth_key)
         p = self.path()
         with self._lock:
             fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=".settings-", suffix=".json")
@@ -310,6 +324,8 @@ class Settings:
                     os.unlink(tmp)
 
     def feed_url(self, feed: Feed) -> str | None:
+        if feed.requires_key and not self.abusech_auth_key.strip():
+            return None
         if "{abusech_key}" in feed.url:
             if not self.abusech_auth_key.strip():
                 return None

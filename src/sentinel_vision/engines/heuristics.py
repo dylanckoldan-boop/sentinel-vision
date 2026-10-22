@@ -463,8 +463,16 @@ class HeuristicEngine(Engine):
         elif hits and head[:2] != b"MZ":
             # a single tool's command inside a script; the Windows tools' own help text contains it too
             out.append(Indicator(50, "Ransomware", "Deletes backups / shadow copies"))
-        if b"stratum+tcp://" in blob or b"stratum+ssl://" in blob or b"xmrig" in blob:
-            out.append(Indicator(55, "CoinMiner", "Cryptocurrency mining pool / miner"))
+        # A mining-pool address plus miner configuration. Merely mentioning a miner (documentation, security
+        # software, a chat about malware) is not enough.
+        pool = re.search(rb"stratum\+(tcp|ssl|tls)://[a-z0-9.-]+\.[a-z]{2,}:\d{2,5}", blob)
+        miner_cfg = re.search(rb'"(donate-level|algo|coin)"\s*:', blob) or re.search(
+            rb"(--donate-level|--algo[= ](rx|cn|randomx|cryptonight)|--coin[= ]monero)", blob
+        )
+        if pool and miner_cfg:
+            out.append(Indicator(60, "CoinMiner", "Cryptocurrency miner configuration with a mining pool"))
+        elif pool:
+            out.append(Indicator(30, "CoinMiner", "Contains a cryptocurrency mining-pool address"))
         if b"your files have been encrypted" in blob or b"files are encrypted" in blob and b"bitcoin" in blob:
             out.append(Indicator(45, "Ransomware", "Ransom note text"))
         return out

@@ -24,6 +24,9 @@ You will get an acknowledgement within 72 hours. We aim to release a fix for con
 * Command injection through firewall, ClamAV or freshclam integration
 * Tricking the self-updater into running a file other than the official installer (signature or checksum bypass,
   downgrade), or weaknesses in the post-quantum signature scheme or its implementation
+* Tamper-protection bypasses on Windows: a program running with a user's normal rights reading, changing or deleting
+  the protected vault, quarantine or settings, weakening protection without administrator approval, impersonating
+  the protection service, reaching another account's data, or getting the service (LocalSystem) to act on its behalf
 * Ransomware-shield bypasses due to bugs (decoys not tripping, vault content altered without detection)
 * Making the Web Shield block legitimate core services, or injecting entries into the hosts file
 * Behavior monitoring terminating processes it should not (e.g. crafted command lines that kill system processes)
@@ -32,7 +35,8 @@ You will get an acknowledgement within 72 hours. We aim to release a fix for con
 ## Out of scope
 
 * Malware that no enabled rule set or feed knows about yet — please report the sample to [MalwareBazaar](https://bazaar.abuse.ch/) or submit a YARA rule via a pull request
-* Attacks that require an attacker who already has administrator/root access to the machine
+* Attacks that require an attacker who already has administrator/root access to the machine (an administrator can
+  always stop or remove any program that doesn't have a kernel driver)
 * False positives (please open a normal issue)
 
 ## Hardening notes for users

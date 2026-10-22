@@ -513,7 +513,10 @@ class BehaviorMonitor:
         exact = any(d.engine in EXACT_ENGINES for d in res.detections)
         confirmed = exact or (
             not is_system_path(exe)
-            and any(d.engine == "yara" and d.severity >= Severity.CRITICAL for d in res.detections)
+            and any(
+                d.engine == "yara" and d.severity >= Severity.CRITICAL and not d.details.get("report_only")
+                for d in res.detections
+            )
         )
         action = "reported"
         if confirmed and self.settings.behavior_kill_malicious and pid:

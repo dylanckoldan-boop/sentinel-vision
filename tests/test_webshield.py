@@ -152,3 +152,14 @@ def test_cloud_reputation_flags_malware_and_clears_known_good(sentinel, workdir,
     sentinel.settings.cloud_lookup = False
     monkeypatch.setattr(svc, "lookup", lambda h: (_ for _ in ()).throw(AssertionError("must not be called")))
     sentinel.scanner.scan_file(bad, origin="realtime", act=False, use_cache=False)
+
+
+def test_hosts_block_is_capped_so_name_lookups_stay_fast(tmp_path, monkeypatch):
+    monkeypatch.setattr(webshield, "flush_dns", lambda: None)
+    monkeypatch.setattr(webshield, "MAX_HOSTS_ENTRIES", 50)
+    hosts = tmp_path / "hosts"
+    hosts.write_text("127.0.0.1 localhost\n")
+    many = [f"bad{i}.example.com" for i in range(500)] + ["bad1.example.com"]
+    assert webshield.apply_hosts(many, hosts) == 50
+    assert webshield.hosts_status(hosts) == 50
+    assert "0.0.0.0 bad0.example.com" in hosts.read_text()  # order kept: the first (most important) entries win
