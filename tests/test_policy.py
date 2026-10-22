@@ -139,3 +139,20 @@ def test_coinminer_heuristic_needs_a_real_pool_and_miner_settings():
     assert not [d for d in h.scan(ScanObject("a.js", data=mention)) if d.name == "Heuristic.CoinMiner"]
     cfg = b'{"pools":[{"url":"stratum+tcp://pool.example.org:3333"}],"donate-level":1,"algo":"rx/0"}'
     assert [d for d in h.scan(ScanObject("config.json", data=cfg)) if d.name == "Heuristic.CoinMiner"]
+
+
+def test_findings_in_program_and_system_folders_are_items_to_review():
+    from sentinel_vision.scanner import Scanner
+
+    tool = _res(
+        "/opt/ansible/modules/psexec.py",
+        "script",
+        "program",
+        Detection("yara", "SV_PowerShell_Download_Cradle", Severity.HIGH),
+        Detection("hash", "Known.Bad", Severity.CRITICAL),
+    )
+    Scanner._apply_location_context(tool)
+    yara_hit = next(d for d in tool.detections if d.engine == "yara")
+    exact = next(d for d in tool.detections if d.engine == "hash")
+    assert yara_hit.details.get("report_only") and not yara_hit.is_signature
+    assert not exact.details.get("report_only") and exact.is_signature  # known malware stays a threat

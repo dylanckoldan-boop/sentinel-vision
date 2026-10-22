@@ -236,7 +236,13 @@ class Scanner:
                 member_results = list(self._scan_archive(obj, depth=1, origin=origin))
             except ArchiveLimitError as exc:
                 res.detections.append(
-                    Detection("archive", "Archive.Bomb", Severity.MEDIUM, f"Archive exceeds safety limits: {exc}")
+                    Detection(
+                        "archive",
+                        "Archive.Bomb",
+                        Severity.LOW,
+                        f"Archive exceeds safety limits, so it was not checked completely: {exc}",
+                        {"report_only": True},
+                    )
                 )
             except Exception as exc:
                 log.debug("archive walk failed for %s: %s", p, exc)
@@ -413,16 +419,23 @@ class Scanner:
 
     @staticmethod
     def _apply_location_context(res: ScanResult) -> None:
-        """Installed programs' folders can only be changed with administrator rights, and their scripts, add-ins
-        and libraries trip heuristics (Office's own JavaScript and add-ins, Git's runtime). There, guesses below
-        High are not shown; everything else is still reported."""
-        if res.where != "program" or not res.detections:
+        """Installed programs' folders and the operating system can only be changed with administrator rights, and
+        their scripts, add-ins, libraries and test data trip patterns and heuristics constantly (Office's own
+        JavaScript, Git's runtime, automation tools that generate PowerShell, browser resource bundles). There:
+
+        * heuristic guesses below High are not shown;
+        * other pattern and heuristic findings are shown as items to review, never as threats;
+        * exact matches (known-malware hash, ClamAV, cloud lookup) stay threats and are acted on as usual."""
+        if not res.detections or not (res.where == "program" or is_system_path(res.path)):
             return
         quiet = [d for d in res.detections if d.engine == "heuristics" and d.severity < Severity.HIGH]
-        if quiet:
-            for d in quiet:
-                log.info("ignoring %s in installed program folder %s", d.name, res.path)
-            res.detections = [d for d in res.detections if d not in quiet]
+        for d in quiet:
+            log.info("ignoring %s in installed program folder %s", d.name, res.path)
+        res.detections = [d for d in res.detections if d not in quiet]
+        for d in res.detections:
+            if d.engine not in EXACT_ENGINES and not d.details.get("report_only"):
+                d.details["report_only"] = True
+                d.description += " (in an installed program's folder: reported for review)"
 
     # ------------------------------------------------------------------ actions
     def should_quarantine(self, res: ScanResult) -> bool:
