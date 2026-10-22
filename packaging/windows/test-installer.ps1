@@ -24,7 +24,7 @@ function Invoke-Setup([string]$exe, [string[]]$arguments, [string]$label) {
     if ($proc.ExitCode -ne 0) { throw "$label exit code $($proc.ExitCode)" }
     Write-Host "OK  $label finished"
 }
-function Cli([string[]]$a) { $out = & "$newApp\sentinel-vision-cli.exe" @a 2>&1 | Out-String; Write-Host $out; return $out }
+function SvCli([string[]]$a) { $out = & "$newApp\sentinel-vision-cli.exe" @a 2>&1 | Out-String; Write-Host $out; return $out }
 function Service-State { (Get-CimInstance Win32_Service -Filter "Name='SentinelVisionService'") }
 
 $oldApp = Join-Path $env:LOCALAPPDATA 'Programs\Sentinel Vision'
@@ -77,6 +77,8 @@ Assert (Test-Path "$newApp\sentinel-vision-service.exe") "service program instal
 Assert (-not (Test-Path "$oldApp\SentinelVision.exe")) "old per-user copy removed"
 Assert (-not (Test-Path "HKCU:\$uninstKey")) "old per-user uninstall entry removed"
 Assert (Test-Path "HKLM:\$uninstKey") "new uninstall entry registered for all users"
+$shown = (Get-ItemProperty "HKLM:\$uninstKey").DisplayName
+Assert ($shown -eq 'Sentinel Vision') "listed in Installed apps as plain 'Sentinel Vision' ($shown)"
 Assert (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Sentinel Vision.lnk")) "old Start menu shortcut removed"
 Assert (Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Sentinel Vision.lnk") "Start menu shortcut for all users"
 $userPath = (Get-ItemProperty 'HKCU:\Environment').Path
@@ -94,17 +96,17 @@ $pfAcl = (Get-Acl $newApp).Access | Where-Object { $_.IdentityReference.Value -m
 Assert (-not $pfAcl) "ordinary users can't modify the program folder"
 
 Write-Host "== data carried over into the protected service"
-$status = Cli @('service')
+$status = SvCli @('service')
 Assert ($status -match 'Protection service') "the app talks to the service"
 Assert ($status -match 'quarantine:\s+[1-9]') "quarantined file moved into protected storage"
-$vault = Cli @('rollback', 'list')
+$vault = SvCli @('rollback', 'list')
 Assert ($vault -match 'Report 1\.txt') "rollback vault moved into protected storage"
 Assert (-not (Test-Path (Join-Path $env:LOCALAPPDATA 'SentinelVision\vault\vault.key'))) "old unprotected vault removed"
 Assert (-not (Test-Path (Join-Path $env:LOCALAPPDATA 'SentinelVision\quarantine\vault.key'))) "old unprotected quarantine removed"
-$v = (Cli @('rollback', 'versions', "$docs\Report 1.txt"))
+$v = (SvCli @('rollback', 'versions', "$docs\Report 1.txt"))
 $vid = [regex]::Match($v, '(?m)^\s*(\d+)\s').Groups[1].Value
 Set-Content -Path "$docs\Report 1.txt" -Value 'overwritten'
-Cli @('rollback', 'restore', $vid) | Out-Null
+SvCli @('rollback', 'restore', $vid) | Out-Null
 Assert ((Get-Content "$docs\Report 1.txt" -Raw) -match 'Quarterly report 1') "a document restores from protected storage"
 
 # ------------------------------------------------------------------------------------------------ 3. ordinary account
@@ -156,8 +158,8 @@ if ($mySession -ne 0 -and $active -match 'Active') {
 }
 
 Write-Host "== website and firewall blocking applied by the service"
-Cli @('webshield', 'enable') | Out-Null
-$st = Cli @('service')
+SvCli @('webshield', 'enable') | Out-Null
+$st = SvCli @('service')
 Assert ($st -match 'website blocking: on \([1-9]') "website blocking applied by the service: $st"
 $fw = netsh advfirewall firewall show rule name="Sentinel Vision - malicious networks out 1" | Out-String
 Assert ($fw -match 'Block') "firewall rule for criminal networks created"
@@ -166,7 +168,7 @@ Assert ($fw -match 'Block') "firewall rule for criminal networks created"
 Write-Host "== upgrade over the running app and service"
 Invoke-Setup $Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/LOG="install2.log"') "upgrade over itself"
 Assert ((Service-State).State -eq 'Running') "service running again after the upgrade"
-Assert ((Cli @('service')) -match 'quarantine:\s+[1-9]') "protected data survived the upgrade"
+Assert ((SvCli @('service')) -match 'quarantine:\s+[1-9]') "protected data survived the upgrade"
 
 Write-Host "== self-update style install relaunches the app"
 Invoke-Setup $Setup @('/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/RELAUNCH=1', '/LOG="install3.log"') "self-update style install"

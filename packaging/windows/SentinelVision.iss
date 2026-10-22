@@ -234,6 +234,10 @@ begin
     '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\tools\migrate-user-install.ps1') +
     '" -NewDir "' + ExpandConstant('{app}') + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Log(Format('per-user install clean-up exit code %d', [ResultCode]));
+  { Setup named this entry "(All users)" because the per-user one still existed; that one is gone now }
+  if not RegKeyExists(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppIdStr}_is1') then
+    RegWriteStringValue(HKLM64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppIdStr}_is1',
+      'DisplayName', '{#AppName}');
 end;
 
 procedure SetAutostart(const On: Boolean);
