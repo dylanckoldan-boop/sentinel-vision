@@ -167,10 +167,11 @@ class WindowsApplier(servicecore.SystemApplier):
                 nets = systemblock.load_list(self.root, "networks.txt")
             st = self._state()
             cmds, rules = systemblock.firewall_commands(nets, int(st.get("firewall_rules", 0)))
-            for cmd in cmds:
-                _run(cmd)
+            failed = sum(1 for cmd in cmds if _run(cmd) != 0 and "add" in cmd)
             st["firewall_rules"] = rules
             self._save_state(st)
+        if failed:
+            raise RuntimeError(f"Windows Firewall refused {failed} of {rules * 2} rule(s)")
         return f"{len(systemblock.safe_networks(nets)):,} networks blocked in {rules} rule(s)"
 
     def remove_firewall(self) -> str:
@@ -199,9 +200,13 @@ class WindowsApplier(servicecore.SystemApplier):
 
 def _run(cmd: list[str]) -> int:
     try:
-        return subprocess.run(  # noqa: S603 - fixed system tools, no shell
+        r = subprocess.run(  # noqa: S603 - fixed system tools, no shell
             cmd, capture_output=True, timeout=120, creationflags=0x08000000
-        ).returncode
+        )
+        if r.returncode != 0:
+            out = (r.stdout or b"").decode("utf-8", "replace") + (r.stderr or b"").decode("utf-8", "replace")
+            log.warning("%s exited with %s: %s", " ".join(cmd[:6]), r.returncode, out.strip()[:300])
+        return r.returncode
     except (OSError, subprocess.TimeoutExpired) as exc:
         log.warning("%s failed: %s", cmd[:5], exc)
         return -1

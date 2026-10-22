@@ -177,7 +177,8 @@ Progress 'webshield enabled'
 $st = SvCli @('service')
 Assert ($st -match 'website blocking: on \([1-9]') "website blocking applied by the service: $st"
 $fw = netsh advfirewall firewall show rule name="Sentinel Vision - malicious networks out 1" | Out-String
-Assert ($fw -match 'Block') "firewall rule for criminal networks created"
+$ours = (netsh advfirewall firewall show rule name=all | Select-String 'Sentinel Vision' | Out-String).Trim()
+Assert ($fw -match 'Block') "firewall rule for criminal networks created (status: $st; rules: $ours)"
 
 # firewall blocking must never cut off the services the app itself depends on, or big shared hosting
 $nets = @(Get-Content (Join-Path $data 'feeds\networks.txt') -ErrorAction SilentlyContinue)

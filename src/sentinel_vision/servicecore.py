@@ -16,6 +16,7 @@ rollback vault or quarantine, and can't quietly weaken protection:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import secrets
@@ -28,6 +29,8 @@ from pathlib import Path
 from sentinel_vision import __version__
 from sentinel_vision.quarantine import Quarantine, QuarantineError
 from sentinel_vision.vault import RollbackVault, VaultError
+
+log = logging.getLogger("sentinel_vision.service")
 
 PROTOCOL = 1
 MAX_UPLOAD = 2 * 1024 * 1024 * 1024  # largest file accepted into quarantine
@@ -361,8 +364,10 @@ class ServiceCore:
             if bool(new.get(key)) != bool(old.get(key)):
                 try:
                     msg = on() if new.get(key) else off()
+                    log.info("%s %s: %s", label(key), "on" if new.get(key) else "off", msg)
                     self._event("*", "system", f"{label(key)}: {msg}")
                 except Exception as exc:  # reported, never fatal
+                    log.warning("%s failed: %s", label(key), exc)
                     self._event("*", "system", f"{label(key)} failed: {exc}")
 
     def op_system_refresh(self, c: Caller, a: dict, p: bytes) -> dict:
