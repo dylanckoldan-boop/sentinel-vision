@@ -147,7 +147,7 @@ class WindowsApplier(servicecore.SystemApplier):
             if not domains:
                 self.refresh()
                 domains = systemblock.load_list(self.root, "domains.txt")
-            n = webshield.apply_hosts(domains)
+            n = webshield.apply_hosts(domains[: webshield.MAX_HOSTS_ENTRIES])
             webshield.flush_dns()
         return f"{n:,} sites blocked"
 

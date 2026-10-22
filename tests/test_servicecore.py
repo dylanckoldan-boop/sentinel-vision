@@ -1,5 +1,6 @@
 """The protected service's rules (platform independent)."""
 
+import dataclasses
 import hashlib
 import os
 
@@ -317,3 +318,27 @@ def test_second_account_starts_fine_when_machine_wide_blocking_is_on(core, isola
     assert b.settings.webshield_block_hosts is True  # shows the machine-wide state
     assert core.global_policy()["webshield_block_hosts"] is True
     b.shutdown()
+
+
+def test_machine_wide_lists_put_malware_sites_first(tmp_path, monkeypatch):
+    from sentinel_vision import systemblock, updater
+    from sentinel_vision.config import DEFAULT_FEEDS
+
+    phishing = "\n".join(f"aaa-phish{i}.example.com" for i in range(30))
+    malware = "\n".join(f"zzz-malware{i}.example.net" for i in range(5))
+
+    def fake_download(url, *a, **k):
+        feed = next(f for f in DEFAULT_FEEDS if f.url == url)
+        if feed.kind == "domains_phishing":
+            return phishing.encode()
+        if feed.kind == "domains_malware":
+            return malware.encode()
+        return b"45.12.0.0/16\n"
+
+    monkeypatch.setattr(updater, "download", fake_download)
+    feeds = [f for f in DEFAULT_FEEDS if f.kind != "domains_malware"]
+    feeds.append(dataclasses.replace(next(f for f in DEFAULT_FEEDS if f.kind == "domains_malware"), requires_key=False))
+    monkeypatch.setattr("sentinel_vision.config.DEFAULT_FEEDS", feeds)
+    systemblock.refresh_lists(tmp_path)
+    domains = systemblock.load_list(tmp_path, "domains.txt")
+    assert domains[:5] == sorted(malware.split()) and len(domains) == 35

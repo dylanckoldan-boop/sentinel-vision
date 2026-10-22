@@ -15,6 +15,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $script:passed = 0
+function Progress([string]$m) { Write-Host "== $m"; Add-Content -LiteralPath progress.txt -Value "$(Get-Date -Format HH:mm:ss) $m" }
 function Assert($cond, $msg) { if (-not $cond) { throw "ASSERTION FAILED: $msg" } else { $script:passed++; Write-Host "OK  $msg" } }
 function Invoke-Setup([string]$exe, [string[]]$arguments, [string]$label) {
     # Start-Process -Wait would also wait for programs the installer starts (the app), so wait for the installer only
@@ -36,7 +37,7 @@ $docs = [Environment]::GetFolderPath('MyDocuments')
 New-Item -ItemType Directory -Force $docs | Out-Null
 
 # ------------------------------------------------------------------------------------------------ 1. previous release
-Write-Host "== previous release $PreviousVersion (per-user install)"
+Progress "previous release $PreviousVersion (per-user install)"
 $prev = Join-Path $env:RUNNER_TEMP "SentinelVision-$PreviousVersion-Setup.exe"
 $base = "https://github.com/$Repo/releases/download/v$PreviousVersion"
 Invoke-WebRequest "$base/SentinelVision-$PreviousVersion-Setup.exe" -OutFile $prev
@@ -70,7 +71,7 @@ $gui = Start-Process "$oldApp\SentinelVision.exe" -ArgumentList '--minimized' -P
 Start-Sleep -Seconds 10
 
 # ------------------------------------------------------------------------------------------------ 2. upgrade
-Write-Host "== upgrade to the new version"
+Progress "upgrade to the new version"
 Invoke-Setup $Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/LOG="install1.log"') "upgrade from $PreviousVersion"
 Assert (Test-Path "$newApp\SentinelVision.exe") "installed in Program Files"
 Assert (Test-Path "$newApp\sentinel-vision-service.exe") "service program installed"
@@ -95,7 +96,7 @@ Assert (-not ($acl.Access | Where-Object { $_.IdentityReference.Value -notmatch 
 $pfAcl = (Get-Acl $newApp).Access | Where-Object { $_.IdentityReference.Value -match 'Users|Everyone|Authenticated' -and $_.FileSystemRights -match 'Write|Modify|FullControl' -and $_.AccessControlType -eq 'Allow' }
 Assert (-not $pfAcl) "ordinary users can't modify the program folder"
 
-Write-Host "== data carried over into the protected service"
+Progress "data carried over into the protected service"
 $status = SvCli @('service')
 Assert ($status -match 'Protection service') "the app talks to the service"
 Assert ($status -match 'quarantine:\s+[1-9]') "quarantined file moved into protected storage"
@@ -110,7 +111,7 @@ SvCli @('rollback', 'restore', $vid) | Out-Null
 Assert ((Get-Content "$docs\Report 1.txt" -Raw) -match 'Quarterly report 1') "a document restores from protected storage"
 
 # ------------------------------------------------------------------------------------------------ 3. ordinary account
-Write-Host "== an ordinary (non-administrator) account"
+Progress "an ordinary (non-administrator) account"
 $pw = ConvertTo-SecureString ('Sv-' + [guid]::NewGuid().ToString('N').Substring(0, 12) + '!a1') -AsPlainText -Force
 New-LocalUser -Name 'svtest' -Password $pw -PasswordNeverExpires | Out-Null
 $cred = New-Object System.Management.Automation.PSCredential('svtest', $pw)
@@ -148,7 +149,7 @@ Assert ($r -match 'Tamper protection: OK' -and $r -match 'selftest_exit=0') "an 
 Assert ($r -notmatch 'Report 1\.txt' -and $r -match 'rollback_exit=0') "an ordinary account can't see another account's vault: $r"
 
 # ------------------------------------------------------------------------------------------------ app + watchdog
-Write-Host "== the app with the service"
+Progress "the app with the service"
 $gui = Start-Process "$newApp\SentinelVision.exe" -ArgumentList '--minimized' -PassThru
 Start-Sleep -Seconds 25
 $running = @(Get-Process SentinelVision -ErrorAction SilentlyContinue)
@@ -169,8 +170,10 @@ if ($mySession -ne 0 -and $active -match 'Active') {
     Write-Host "::notice title=Watchdog::not tested here (no interactive desktop session on this machine)"
 }
 
-Write-Host "== website and firewall blocking applied by the service"
+Progress "website and firewall blocking applied by the service"
+Progress 'webshield enable'
 SvCli @('webshield', 'enable') | Out-Null
+Progress 'webshield enabled'
 $st = SvCli @('service')
 Assert ($st -match 'website blocking: on \([1-9]') "website blocking applied by the service: $st"
 $fw = netsh advfirewall firewall show rule name="Sentinel Vision - malicious networks out 1" | Out-String
@@ -190,6 +193,7 @@ function In-Net([string]$ip, [string]$cidr) {
     }
     return $true
 }
+Progress 'checking essential services against the blocked networks'
 $hits = @()
 $essential = 'github.com', 'api.github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com',
     'raw.githubusercontent.com', 'www.spamhaus.org', 'feodotracker.abuse.ch', 'rules.emergingthreats.net',
@@ -207,23 +211,23 @@ foreach ($u in 'https://api.github.com/', 'https://www.spamhaus.org/drop/drop.tx
 }
 
 # ------------------------------------------------------------------------------------------------ 4. upgrades
-Write-Host "== upgrade over the running app and service"
+Progress "upgrade over the running app and service"
 Invoke-Setup $Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/LOG="install2.log"') "upgrade over itself"
 Assert ((Service-State).State -eq 'Running') "service running again after the upgrade"
 Assert ((SvCli @('service')) -match 'quarantine:\s+[1-9]') "protected data survived the upgrade"
 
-Write-Host "== self-update style install relaunches the app"
+Progress "self-update style install relaunches the app"
 Invoke-Setup $Setup @('/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/RELAUNCH=1', '/LOG="install3.log"') "self-update style install"
 Start-Sleep -Seconds 15
 Assert (Get-Process SentinelVision -ErrorAction SilentlyContinue) "app relaunched after /RELAUNCH=1"
 
-Write-Host "== unticking start-at-sign-in"
+Progress "unticking start-at-sign-in"
 Invoke-Setup $Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS="addtopath"', '/LOG="install4.log"') "install without start-at-sign-in"
 Assert ($null -eq (Get-ItemProperty $runKey -Name SentinelVision -ErrorAction SilentlyContinue)) "start-at-sign-in removed"
 Assert ((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').Path -like "*$newApp*") "command-line tool on the PATH"
 
 # ------------------------------------------------------------------------------------------------ 5. uninstall
-Write-Host "== silent uninstall"
+Progress "silent uninstall"
 $decoy = Join-Path $docs '!Budget 2026.docx'
 Invoke-Setup "$newApp\unins000.exe" @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') "uninstaller"
 $deadline = (Get-Date).AddSeconds(90)

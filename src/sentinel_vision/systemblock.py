@@ -33,7 +33,8 @@ def refresh_lists(root: Path, excluded_feeds: set[str] | None = None) -> dict:
     excluded = excluded_feeds or set()
     feeds_dir = Path(root) / "feeds"
     feeds_dir.mkdir(parents=True, exist_ok=True)
-    domains: set[str] = set()
+    malware: set[str] = set()
+    phishing: set[str] = set()
     networks: set[str] = set()
     errors: list[str] = []
     for feed in DEFAULT_FEEDS:
@@ -44,14 +45,17 @@ def refresh_lists(root: Path, excluded_feeds: set[str] | None = None) -> dict:
         try:
             text = _maybe_unzip_text(download(feed.url))
             if feed.kind in DOMAIN_KINDS:
-                domains.update(h for h in parse_domain_list(text) if blockable(h))
+                target = malware if feed.kind == "domains_malware" else phishing
+                target.update(h for h in parse_domain_list(text) if blockable(h))
             elif feed.kind in IP_PARSERS:
                 networks.update(IP_PARSERS[feed.kind](text))
         except Exception as exc:  # one publisher being down never empties the lists
             errors.append(f"{feed.name}: {exc}")
     state = {"time": time.time(), "errors": errors}
+    # malware sites first: the hosts file is capped (see webshield.MAX_HOSTS_ENTRIES), so they are never left out
+    domains = sorted(malware) + sorted(phishing - malware)
     if domains:
-        (feeds_dir / "domains.txt").write_text("\n".join(sorted(domains)), encoding="utf-8")
+        (feeds_dir / "domains.txt").write_text("\n".join(domains), encoding="utf-8")
     if networks:
         (feeds_dir / "networks.txt").write_text("\n".join(sorted(networks)), encoding="utf-8")
     state["domains"] = len(load_list(root, "domains.txt"))

@@ -133,6 +133,7 @@ jobs:
           name: windows
           path: out
       - name: Upgrade from the previous release, protection service, tamper protection, uninstall
+        timeout-minutes: 45
         shell: pwsh
         run: |
           try {
@@ -150,6 +151,19 @@ jobs:
             Write-Host "::error title=Windows installer test::$enc"
             throw
           }
+      - name: Where it stopped (if it timed out)
+        if: cancelled() || failure()
+        shell: pwsh
+        run: |
+          $details = ''
+          if (Test-Path progress.txt) { $details += "--- progress`n" + ((Get-Content progress.txt -Tail 8) -join "`n") + "`n" }
+          $svclog = Join-Path $env:ProgramData 'SentinelVision\Service\service.log'
+          if (Test-Path $svclog) { $details += "--- service.log (tail)`n" + ((Get-Content $svclog -Tail 15) -join "`n") + "`n" }
+          $hosts = Get-Item "$env:SystemRoot\System32\drivers\etc\hosts"
+          $details += "--- hosts file: $([math]::Round($hosts.Length / 1MB, 1)) MB`n"
+          $details += "--- processes: " + ((Get-Process SentinelVision, sentinel-vision-*, unins*, SentinelVision-* -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Name)($($_.Id))" }) -join ', ')
+          $enc = $details.Replace('%', '%25').Replace("`r", '').Replace("`n", '%0A')
+          Write-Host "::error title=Installer test diagnostics::$enc"
       - name: Upload installer logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

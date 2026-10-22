@@ -397,6 +397,8 @@ def strip_block(text: str) -> str:
 def apply_hosts(hosts: list[str], path: Path | None = None) -> int:
     """Write (or replace) the managed block. Requires administrator/root. Returns entries written."""
     path = path or hosts_path()
+    # a very large hosts file makes name look-ups slow for every program, so the block is always capped
+    hosts = list(dict.fromkeys(h for h in hosts if blockable(h)))[:MAX_HOSTS_ENTRIES]
     original = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
     base = strip_block(original)
     if base and not base.endswith("\n"):
