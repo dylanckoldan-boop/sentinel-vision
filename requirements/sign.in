@@ -1,0 +1,3 @@
+# The release-signing step installs exactly these (pip --require-hashes).
+# Regenerate: uv pip compile requirements/sign.in --universal --generate-hashes --python-version 3.12 -o requirements/sign.lock
+cryptography>=50

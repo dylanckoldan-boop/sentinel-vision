@@ -1,0 +1,4 @@
+# The website build installs exactly these (pip --require-hashes).
+# Regenerate: uv pip compile requirements/site.in --universal --generate-hashes --python-version 3.12 -o requirements/site.lock
+pillow
+playwright
