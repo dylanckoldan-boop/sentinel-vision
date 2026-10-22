@@ -198,14 +198,22 @@ class WindowsApplier(servicecore.SystemApplier):
         }
 
 
+def _command_line(cmd: list[str]) -> str | list[str]:
+    """netsh parses its own command line and expects name="Rule name" (not a fully quoted "name=Rule name")."""
+    if cmd and cmd[0] == "netsh":
+        return " ".join(f'name="{a[5:]}"' if a.startswith("name=") else a for a in cmd)
+    return cmd
+
+
 def _run(cmd: list[str]) -> int:
     try:
         r = subprocess.run(  # noqa: S603 - fixed system tools, no shell
-            cmd, capture_output=True, timeout=120, creationflags=0x08000000
+            _command_line(cmd), capture_output=True, timeout=120, creationflags=0x08000000
         )
         if r.returncode != 0:
             out = (r.stdout or b"").decode("utf-8", "replace") + (r.stderr or b"").decode("utf-8", "replace")
-            log.warning("%s exited with %s: %s", " ".join(cmd[:6]), r.returncode, out.strip()[:300])
+            first = " ".join(out.strip().splitlines()[:2])
+            log.warning("%s exited with %s: %s", " ".join(cmd[:6]), r.returncode, first[:300])
         return r.returncode
     except (OSError, subprocess.TimeoutExpired) as exc:
         log.warning("%s failed: %s", cmd[:5], exc)

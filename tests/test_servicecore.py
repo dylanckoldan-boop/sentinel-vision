@@ -342,3 +342,17 @@ def test_machine_wide_lists_put_malware_sites_first(tmp_path, monkeypatch):
     systemblock.refresh_lists(tmp_path)
     domains = systemblock.load_list(tmp_path, "domains.txt")
     assert domains[:5] == sorted(malware.split()) and len(domains) == 35
+
+
+def test_firewall_rules_stay_within_netsh_argument_limits():
+    """netsh rejected a rule holding 482 addresses (about 8,200 characters) on a real Windows machine."""
+    from sentinel_vision import systemblock, winservice
+
+    nets = [f"45.{a}.{b}.{c}/32" for a in range(13, 20) for b in range(0, 10) for c in range(1, 200)]
+    batches = systemblock.firewall_batches(nets)
+    assert sum(len(b.split(",")) for b in batches) == len(systemblock.safe_networks(nets))
+    assert all(len(b) <= systemblock.RULE_CHARS for b in batches) and len(batches) > 1
+    cmds, rules = systemblock.firewall_commands(nets, 0)
+    assert rules == len(batches) and len(cmds) == 2 * rules
+    line = winservice._command_line(cmds[0])
+    assert 'name="Sentinel Vision - malicious networks out 1"' in line and len(line) < 3300

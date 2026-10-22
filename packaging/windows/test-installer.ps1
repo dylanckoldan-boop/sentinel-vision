@@ -176,9 +176,11 @@ SvCli @('webshield', 'enable') | Out-Null
 Progress 'webshield enabled'
 $st = SvCli @('service')
 Assert ($st -match 'website blocking: on \([1-9]') "website blocking applied by the service: $st"
-$fw = netsh advfirewall firewall show rule name="Sentinel Vision - malicious networks out 1" | Out-String
-$ours = (netsh advfirewall firewall show rule name=all | Select-String 'Sentinel Vision' | Out-String).Trim()
-Assert ($fw -match 'Block') "firewall rule for criminal networks created (status: $st; rules: $ours)"
+$rules = @(Get-NetFirewallRule -DisplayName 'Sentinel Vision - malicious networks *' -ErrorAction SilentlyContinue)
+$out1 = $rules | Where-Object { $_.DisplayName -eq 'Sentinel Vision - malicious networks out 1' }
+Assert ($out1 -and $out1.Action -eq 'Block' -and $out1.Enabled -eq 'True') "firewall rules for criminal networks created ($($rules.Count) rules; status: $st)"
+$addr = @($rules | Get-NetFirewallAddressFilter | ForEach-Object { $_.RemoteAddress }).Count
+Assert ($addr -ge 10) "firewall rules hold the blocked networks ($addr addresses)"
 
 # firewall blocking must never cut off the services the app itself depends on, or big shared hosting
 $nets = @(Get-Content (Join-Path $data 'feeds\networks.txt') -ErrorAction SilentlyContinue)
@@ -236,8 +238,8 @@ while ((Test-Path "$newApp\SentinelVision.exe") -and (Get-Date) -lt $deadline) {
 Assert (-not (Test-Path "$newApp\SentinelVision.exe")) "program files removed"
 Assert ($null -eq (Service-State)) "protection service removed"
 Assert ($null -eq (Get-Process SentinelVision, sentinel-vision-service -ErrorAction SilentlyContinue)) "nothing left running"
-$fw = netsh advfirewall firewall show rule name="Sentinel Vision - malicious networks out 1" | Out-String
-Assert ($fw -notmatch 'Block') "firewall rules removed"
+$left = @(Get-NetFirewallRule -DisplayName 'Sentinel Vision - malicious networks *' -ErrorAction SilentlyContinue)
+Assert ($left.Count -eq 0) "firewall rules removed ($($left.Count) left)"
 $hosts = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw
 Assert ($hosts -notmatch 'Sentinel Vision') "website blocking removed from the hosts file"
 Assert ($null -eq (Get-ItemProperty $runKey -Name SentinelVision -ErrorAction SilentlyContinue)) "start-at-sign-in removed"

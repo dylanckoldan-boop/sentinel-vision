@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 
 RULE_PREFIX = "Sentinel Vision - malicious networks"
 RULE_BATCH = 800
+RULE_CHARS = 3000  # characters per rule's address list
 MAX_NETWORKS = 20000
 DOMAIN_KINDS = ("domains_malware", "domains_phishing")
 FIREWALL_FEEDS = ("Spamhaus DROP", "Feodo Tracker botnet C2", "Emerging Threats compromised hosts")
@@ -89,8 +90,20 @@ def safe_networks(networks: list[str]) -> list[str]:
 
 
 def firewall_batches(networks: list[str]) -> list[str]:
-    nets = safe_networks(networks)
-    return [",".join(nets[i : i + RULE_BATCH]) for i in range(0, len(nets), RULE_BATCH)]
+    """Comma-separated address lists for one rule each. netsh rejects arguments longer than about 8,000
+    characters, so each list stays well under that (and under RULE_BATCH addresses)."""
+    out: list[str] = []
+    cur: list[str] = []
+    size = 0
+    for n in safe_networks(networks):
+        if cur and (len(cur) >= RULE_BATCH or size + len(n) + 1 > RULE_CHARS):
+            out.append(",".join(cur))
+            cur, size = [], 0
+        cur.append(n)
+        size += len(n) + 1
+    if cur:
+        out.append(",".join(cur))
+    return out
 
 
 def firewall_commands(networks: list[str], previous_rules: int) -> tuple[list[list[str]], int]:
