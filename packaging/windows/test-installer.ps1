@@ -40,8 +40,12 @@ Write-Host "== previous release $PreviousVersion (per-user install)"
 $prev = Join-Path $env:RUNNER_TEMP "SentinelVision-$PreviousVersion-Setup.exe"
 $base = "https://github.com/$Repo/releases/download/v$PreviousVersion"
 Invoke-WebRequest "$base/SentinelVision-$PreviousVersion-Setup.exe" -OutFile $prev
-$sums = (Invoke-WebRequest "$base/SHA256SUMS.txt").Content
-$expected = ($sums -split "`n" | Where-Object { $_ -match "SentinelVision-$PreviousVersion-Setup.exe" }) -replace '\s.*$', ''
+$sumsFile = Join-Path $env:RUNNER_TEMP 'prev-SHA256SUMS.txt'
+Invoke-WebRequest "$base/SHA256SUMS.txt" -OutFile $sumsFile
+$name = "SentinelVision-$PreviousVersion-Setup.exe"
+$lines = @(Get-Content $sumsFile | Where-Object { ($_ -split '\s+', 2)[1] -replace '^\*', '' -eq $name })
+Assert ($lines.Count -eq 1) "previous release checksum list has exactly one entry for $name"
+$expected = ([string]$lines[0] -split '\s+')[0]
 Assert ((Get-FileHash $prev -Algorithm SHA256).Hash -eq $expected.ToUpper()) "previous release download matches its published SHA-256"
 Invoke-Setup $prev @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', '/TASKS="autostart,addtopath"', '/LOG="prev-install.log"') "previous release install"
 Assert (Test-Path "$oldApp\SentinelVision.exe") "previous release installed in the user folder"
