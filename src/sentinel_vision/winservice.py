@@ -264,7 +264,8 @@ class PipeServer:
         import win32pipe
         import win32security
 
-        win32pipe.ImpersonateNamedPipeClient(h)
+        # Windows allows this only after the first message was read from the pipe
+        win32security.ImpersonateNamedPipeClient(h)
         try:
             tok = win32security.OpenThreadToken(win32api.GetCurrentThread(), win32security.TOKEN_QUERY, True)
             sid = win32security.ConvertSidToStringSid(
@@ -284,12 +285,7 @@ class PipeServer:
         import pywintypes
         import win32file
 
-        try:
-            caller = self._identify(h)
-        except Exception as exc:
-            log.warning("could not identify a client: %s", exc)
-            _close(h)
-            return
+        caller = None
 
         def read_exact(n: int) -> bytes:
             buf = bytearray()
@@ -306,6 +302,12 @@ class PipeServer:
                     req, payload = decode(read_exact)
                 except (EOFError, pywintypes.error):
                     break
+                if caller is None:
+                    try:
+                        caller = self._identify(h)
+                    except Exception as exc:
+                        log.warning("could not identify a client: %s", exc)
+                        break
                 try:
                     result, data = self.core.handle(caller, str(req.get("op", "")), req.get("args") or {}, payload)
                     reply = {"ok": True, "result": result}
