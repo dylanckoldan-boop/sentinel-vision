@@ -117,21 +117,24 @@ $cred = New-Object System.Management.Automation.PSCredential('svtest', $pw)
 $results = 'C:\Users\Public\svtest-results.txt'
 $probe = @"
 `$out = '$results'
-'start' | Out-File `$out -Encoding utf8
-try { Remove-Item '$data' -Recurse -Force -ErrorAction Stop; 'DELETE_DATA_ALLOWED' | Out-File `$out -Append } catch { 'delete_data_denied' | Out-File `$out -Append }
-try { Get-ChildItem '$data' -ErrorAction Stop | Out-Null; 'LIST_DATA_ALLOWED' | Out-File `$out -Append } catch { 'list_data_denied' | Out-File `$out -Append }
-try { [IO.File]::WriteAllText('$newApp\sentinel-vision-cli.exe', 'x'); 'REPLACE_EXE_ALLOWED' | Out-File `$out -Append } catch { 'replace_exe_denied' | Out-File `$out -Append }
-& '$newApp\sentinel-vision-cli.exe' service --self-test *>> `$out
-"selftest_exit=`$LASTEXITCODE" | Out-File `$out -Append
-& '$newApp\sentinel-vision-cli.exe' rollback list *>> `$out
-"rollback_exit=`$LASTEXITCODE" | Out-File `$out -Append
+function W([string]`$t) { Add-Content -LiteralPath `$out -Value `$t -Encoding UTF8 }
+Set-Content -LiteralPath `$out -Value 'start' -Encoding UTF8
+try { Remove-Item '$data' -Recurse -Force -ErrorAction Stop; W 'DELETE_DATA_ALLOWED' } catch { W "delete_data_denied (`$(`$_.Exception.GetType().Name))" }
+try { Get-ChildItem '$data' -ErrorAction Stop | Out-Null; W 'LIST_DATA_ALLOWED' } catch { W 'list_data_denied' }
+try { [IO.File]::WriteAllText('$newApp\sentinel-vision-cli.exe', 'x'); W 'REPLACE_EXE_ALLOWED' } catch { W 'replace_exe_denied' }
+W (& '$newApp\sentinel-vision-cli.exe' service --self-test 2>&1 | Out-String)
+W "selftest_exit=`$LASTEXITCODE"
+W (& '$newApp\sentinel-vision-cli.exe' rollback list 2>&1 | Out-String)
+W "rollback_exit=`$LASTEXITCODE"
+W 'done'
 "@
 Set-Content -Path 'C:\Users\Public\svtest.ps1' -Value $probe
 $p = Start-Process powershell.exe -Credential $cred -LoadUserProfile -WorkingDirectory 'C:\Users\Public' -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File C:\Users\Public\svtest.ps1' -PassThru
 $null = $p.Handle
 if (-not $p.WaitForExit(300000)) { throw "ordinary-account checks did not finish" }
-$r = Get-Content $results -Raw
+$r = if (Test-Path $results) { Get-Content $results -Raw -Encoding UTF8 } else { '(no results file: the ordinary-account script did not run)' }
 Write-Host $r
+Assert ($r -match '(?m)^done') "ordinary-account checks ran to the end: $r"
 Assert ($r -match 'delete_data_denied') "an ordinary account can't delete the protected data"
 Assert ($r -match 'list_data_denied') "an ordinary account can't even list the protected data"
 Assert ($r -match 'replace_exe_denied') "an ordinary account can't replace the program"
@@ -163,6 +166,36 @@ $st = SvCli @('service')
 Assert ($st -match 'website blocking: on \([1-9]') "website blocking applied by the service: $st"
 $fw = netsh advfirewall firewall show rule name="Sentinel Vision - malicious networks out 1" | Out-String
 Assert ($fw -match 'Block') "firewall rule for criminal networks created"
+
+# firewall blocking must never cut off the services the app itself depends on, or big shared hosting
+$nets = @(Get-Content (Join-Path $data 'feeds\networks.txt') -ErrorAction SilentlyContinue)
+Write-Host "networks blocked: $($nets.Count)"
+function In-Net([string]$ip, [string]$cidr) {
+    $parts = $cidr.Split('/'); $a = [Net.IPAddress]::Parse($ip); $n = [Net.IPAddress]::Parse($parts[0])
+    if ($a.AddressFamily -ne $n.AddressFamily) { return $false }
+    $bits = if ($parts.Count -gt 1) { [int]$parts[1] } else { $a.GetAddressBytes().Count * 8 }
+    $ab = $a.GetAddressBytes(); $nb = $n.GetAddressBytes()
+    for ($i = 0; $i -lt $ab.Count; $i++) {
+        $m = [Math]::Max(0, [Math]::Min(8, $bits - 8 * $i)); $mask = (0xFF -shl (8 - $m)) -band 0xFF
+        if (($ab[$i] -band $mask) -ne ($nb[$i] -band $mask)) { return $false }
+    }
+    return $true
+}
+$hits = @()
+$essential = 'github.com', 'api.github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com',
+    'raw.githubusercontent.com', 'www.spamhaus.org', 'feodotracker.abuse.ch', 'rules.emergingthreats.net',
+    'urlhaus.abuse.ch', 'threatfox-api.abuse.ch', 'mb-api.abuse.ch', 'hashlookup.circl.lu', 'api.pwnedpasswords.com',
+    'phishing.army', 'openphish.com', 'database.clamav.net', 'www.microsoft.com', 'www.google.com', 'www.cloudflare.com'
+foreach ($h in $essential) {
+    $ips = @(Resolve-DnsName $h -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress } | ForEach-Object { $_.IPAddress })
+    foreach ($ip in $ips) { foreach ($c in $nets) { if (In-Net $ip $c) { $hits += "$h $ip in $c" } } }
+}
+if ($hits) { Write-Host "::warning title=Firewall overlap::$($hits -join '; ')" }
+Assert (-not $hits) "no essential service is inside a blocked network ($($hits -join '; '))"
+foreach ($u in 'https://api.github.com/', 'https://www.spamhaus.org/drop/drop.txt', 'https://feodotracker.abuse.ch/downloads/ipblocklist.txt') {
+    try { $null = Invoke-WebRequest $u -UseBasicParsing -Method Head -TimeoutSec 20; $ok = $true } catch { $ok = $_.Exception.Message -notmatch 'forbidden by its access permissions|10013'; Write-Host "$u : $($_.Exception.Message)" }
+    Assert $ok "still reachable with firewall blocking on: $u"
+}
 
 # ------------------------------------------------------------------------------------------------ 4. upgrades
 Write-Host "== upgrade over the running app and service"
