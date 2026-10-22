@@ -81,6 +81,18 @@ class Quarantine:
         src = Path(path)
         if not src.is_file() or src.is_symlink():
             raise QuarantineError(f"not a regular file: {src}")
+        with open(src, "rb") as fh:
+            item = self.add_stream(fh, str(src.resolve()), threat, engine)
+        try:
+            src.unlink()
+        except OSError as exc:
+            # Could not remove the original (locked / permissions): roll back so state stays honest.
+            self.delete(item.id)
+            raise QuarantineError(f"could not remove original file: {exc}") from exc
+        return item
+
+    def add_stream(self, fh, original_path: str, threat: str, engine: str) -> QuarantineItem:
+        """Encrypt the content read from ``fh`` into the vault (the caller removes the original)."""
         item_id = uuid.uuid4().hex
         prefix = secrets.token_bytes(8)
         sha = hashlib.sha256()
@@ -88,7 +100,7 @@ class Quarantine:
         vault = self._vault_path(item_id)
         fd = os.open(str(vault), os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_BIN, 0o600)
         try:
-            with os.fdopen(fd, "wb") as out, open(src, "rb") as fh:
+            with os.fdopen(fd, "wb") as out:
                 out.write(MAGIC + prefix)
                 index = 0
                 chunk = fh.read(CHUNK)
@@ -106,15 +118,8 @@ class Quarantine:
         except Exception:
             vault.unlink(missing_ok=True)
             raise
-        item = QuarantineItem(item_id, str(src.resolve()), sha.hexdigest(), size, threat, engine, time.time())
+        item = QuarantineItem(item_id, original_path, sha.hexdigest(), size, str(threat), str(engine), time.time())
         _write_private(self._meta_path(item_id), json.dumps(asdict(item), indent=2).encode())
-        try:
-            src.unlink()
-        except OSError as exc:
-            # Could not remove the original (locked / permissions): roll back so state stays honest.
-            self._meta_path(item_id).unlink(missing_ok=True)
-            vault.unlink(missing_ok=True)
-            raise QuarantineError(f"could not remove original file: {exc}") from exc
         return item
 
     def list(self) -> list[QuarantineItem]:
@@ -135,55 +140,46 @@ class Quarantine:
         except (OSError, ValueError, TypeError) as exc:
             raise QuarantineError(f"unknown quarantine item {item_id}") from exc
 
-    def _decrypt_to(self, item: QuarantineItem, dest: Path) -> None:
+    def iter_plain(self, item_id: str):
+        """Decrypted content of an item, chunk by chunk; raises QuarantineError on any tampering. The final
+        chunk is only yielded after the whole stream and the original SHA-256 have been verified."""
+        item = self.get(item_id)
         sha = hashlib.sha256()
-        tmp = dest.with_name(f".{dest.name}.svrestore")
-        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_BIN, 0o600)
-        try:
-            with open(self._vault_path(item.id), "rb") as fh, os.fdopen(fd, "wb") as out:
-                if fh.read(4) != MAGIC:
-                    raise QuarantineError("vault file has wrong format")
-                prefix = fh.read(8)
-                index, final = 0, False
-                while not final:
-                    hdr = fh.read(5)
-                    if len(hdr) != 5:
-                        raise QuarantineError("vault file is truncated")
-                    n, final = struct.unpack(">I?", hdr)  # `final` is authenticated through the AAD below
-                    ct = fh.read(n)
-                    if len(ct) != n:
-                        raise QuarantineError("vault file is truncated")
-                    try:
-                        pt = self._aes.decrypt(
-                            self._nonce(prefix, index), ct, item.id.encode() + struct.pack(">I?", index, final)
-                        )
-                    except Exception as exc:
-                        raise QuarantineError("vault file failed integrity check") from exc
-                    sha.update(pt)
-                    out.write(pt)
-                    index += 1
-                if fh.read(1):
-                    raise QuarantineError("unexpected data after end of vault stream")
-            if sha.hexdigest() != item.sha256:
-                raise QuarantineError("restored data does not match original hash")
-            os.replace(tmp, dest)
-        finally:
-            if tmp.exists():
-                tmp.unlink()
+        with open(self._vault_path(item.id), "rb") as fh:
+            if fh.read(4) != MAGIC:
+                raise QuarantineError("vault file has wrong format")
+            prefix = fh.read(8)
+            index, final = 0, False
+            while not final:
+                hdr = fh.read(5)
+                if len(hdr) != 5:
+                    raise QuarantineError("vault file is truncated")
+                n, final = struct.unpack(">I?", hdr)  # `final` is authenticated through the AAD below
+                ct = fh.read(n)
+                if len(ct) != n:
+                    raise QuarantineError("vault file is truncated")
+                try:
+                    pt = self._aes.decrypt(
+                        self._nonce(prefix, index), ct, item.id.encode() + struct.pack(">I?", index, final)
+                    )
+                except Exception as exc:
+                    raise QuarantineError("vault file failed integrity check") from exc
+                sha.update(pt)
+                if final:
+                    if fh.read(1):
+                        raise QuarantineError("unexpected data after end of vault stream")
+                    if sha.hexdigest() != item.sha256:
+                        raise QuarantineError("restored data does not match original hash")
+                yield pt
+                index += 1
+
+    def _decrypt_to(self, item: QuarantineItem, dest: Path) -> None:
+        write_restored(self.iter_plain(item.id), dest)
 
     def restore(self, item_id: str, dest: str | Path | None = None, overwrite: bool = False) -> Path:
         """Decrypt an item back to disk (original location by default). Returns the restored path."""
         item = self.get(item_id)
-        target = Path(dest) if dest else Path(item.original_path)
-        if target.is_dir():
-            target = target / Path(item.original_path).name
-        if not target.parent.is_dir():
-            raise QuarantineError(f"destination folder does not exist: {target.parent}")
-        if target.exists() and not overwrite:
-            stem, suffix, n = target.stem, target.suffix, 1
-            while target.exists():
-                target = target.with_name(f"{stem} (restored {n}){suffix}")
-                n += 1
+        target = restore_target(item, dest, overwrite)
         self._decrypt_to(item, target)
         self.delete(item_id)
         return target
@@ -195,3 +191,31 @@ class Quarantine:
 
     def total_size(self) -> int:
         return sum(i.size for i in self.list())
+
+
+def restore_target(item: QuarantineItem, dest: str | Path | None, overwrite: bool) -> Path:
+    target = Path(dest) if dest else Path(item.original_path)
+    if target.is_dir():
+        target = target / Path(item.original_path).name
+    if not target.parent.is_dir():
+        raise QuarantineError(f"destination folder does not exist: {target.parent}")
+    if target.exists() and not overwrite:
+        stem, suffix, n = target.stem, target.suffix, 1
+        while target.exists():
+            target = target.with_name(f"{stem} (restored {n}){suffix}")
+            n += 1
+    return target
+
+
+def write_restored(chunks, dest: Path) -> None:
+    """Write verified chunks to ``dest`` atomically (nothing is left behind if verification fails)."""
+    tmp = dest.with_name(f".{dest.name}.svrestore")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_BIN, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            for chunk in chunks:
+                out.write(chunk)
+        os.replace(tmp, dest)
+    finally:
+        if tmp.exists():
+            tmp.unlink()

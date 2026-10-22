@@ -231,6 +231,8 @@ class Settings:
     # web shield
     webshield_enabled: bool = True  # download malicious/phishing domain lists for the link checker & monitor
     webshield_block_hosts: bool = False  # also block them system-wide via the hosts file (needs administrator)
+    firewall_block: bool = True  # Windows: the protection service blocks known criminal networks in the firewall
+    keep_running: bool = True  # Windows: the protection service starts the app at sign-in and restarts it if closed
 
     # cloud reputation (sends SHA-256 hashes only, never files)
     cloud_lookup: bool = False
