@@ -138,8 +138,8 @@ Assert ($r -match '(?m)^done') "ordinary-account checks ran to the end: $r"
 Assert ($r -match 'delete_data_denied') "an ordinary account can't delete the protected data"
 Assert ($r -match 'list_data_denied') "an ordinary account can't even list the protected data"
 Assert ($r -match 'replace_exe_denied') "an ordinary account can't replace the program"
-Assert ($r -match 'Tamper protection: OK' -and $r -match 'selftest_exit=0') "an ordinary account can't weaken protection through the service"
-Assert ($r -notmatch 'Report 1\.txt' -and $r -match 'rollback_exit=0') "an ordinary account can't see another account's vault"
+Assert ($r -match 'Tamper protection: OK' -and $r -match 'selftest_exit=0') "an ordinary account can't weaken protection through the service: $r"
+Assert ($r -notmatch 'Report 1\.txt' -and $r -match 'rollback_exit=0') "an ordinary account can't see another account's vault: $r"
 
 # ------------------------------------------------------------------------------------------------ app + watchdog
 Write-Host "== the app with the service"
