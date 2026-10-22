@@ -518,7 +518,9 @@ class Scanner:
         origin: str = "scan",
         use_cache: bool = True,
         max_files: int = 0,
+        act: bool = True,
     ) -> ScanSummary:
+        """``act=False`` reports only (nothing is quarantined or recorded) — used by the false-positive audit."""
         summary = ScanSummary()
         cancel = cancel or threading.Event()
         lock = threading.Lock()
@@ -556,7 +558,7 @@ class Scanner:
                     break
                 if cancel.is_set():
                     break
-                inflight.add(pool.submit(self.scan_file, path, origin, True, use_cache))
+                inflight.add(pool.submit(self.scan_file, path, origin, act, use_cache))
                 if len(inflight) >= max_inflight:
                     done, inflight = wait(inflight, return_when=FIRST_COMPLETED)
                     for f in done:

@@ -1,13 +1,18 @@
 name: False-positive audit
 
-# Scans large sets of known-clean operating-system and application files with every engine (including the
-# full YARA Forge rule set) and fails if anything would be auto-quarantined. Heuristic-only findings are
-# listed in the job summary for review.
+# Scans known-clean software with every engine (including the full YARA Forge rule set) and fails if anything
+# would be quarantined automatically. On Windows, everyday applications are installed first, so the audit sees what
+# a real home PC looks like (game launchers, media players, office suites, PDF readers, chat apps...) and scans
+# all of their folders with no file limit. Threats and items to review are listed in the job summary.
 
 on:
   schedule:
     - cron: "17 6 * * 1"  # weekly, Monday 06:17 UTC
   workflow_dispatch:
+    inputs:
+      fail_on:
+        description: "Fail when: signature (would quarantine) or threat (also shown as a threat)"
+        default: signature
 
 permissions:
   contents: read
@@ -18,20 +23,44 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            paths: C:/Windows/System32 "C:/Program Files"
-          - os: macos-latest
-            paths: /Applications /usr/bin /usr/sbin /usr/lib
-          - os: ubuntu-latest
-            paths: /usr/bin /usr/sbin /usr/lib/python3 /usr/share
+          - name: windows-system
+            os: windows-latest
+            paths: C:/Windows/System32 C:/Windows/SysWOW64
+          - name: windows-apps-64
+            os: windows-latest
+            apps: true
+            paths: '"C:/Program Files"'
+          - name: windows-apps-32-and-data
+            os: windows-latest
+            apps: true
+            paths: '"C:/Program Files (x86)" C:/ProgramData "$LOCALAPPDATA" "$APPDATA"'
+          - name: macos
+            os: macos-latest
+            paths: /Applications /Library /usr/bin /usr/sbin /usr/lib
+          - name: linux
+            os: ubuntu-latest
+            paths: /usr/bin /usr/sbin /usr/lib /usr/share /opt
+    name: audit (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 340
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - name: Install everyday applications (Windows)
+        if: matrix.apps
+        shell: pwsh
+        run: |
+          # each one is optional: a package that fails to install must not stop the audit
+          $apps = 'steam','vlc','7zip','adobereader','libreoffice-fresh','gimp','audacity','notepadplusplus',
+                  'obs-studio','zoom','discord','telegram','thunderbird','firefox','keepassxc','putty','winscp',
+                  'wireshark','handbrake','paint.net','qbittorrent','spotify','dropbox','googledrive'
+          foreach ($a in $apps) {
+            choco install $a -y --no-progress --limit-output --execution-timeout 900 *> "$env:RUNNER_TEMP\choco-$a.log"
+            Write-Host ("{0,-20} exit {1}" -f $a, $LASTEXITCODE)
+          }
       - run: pip install .
       - name: Audit
         shell: bash
-        run: python tools/fp_audit.py --update --max-files 20000 ${{ matrix.paths }}
+        run: python tools/fp_audit.py --update --fail-on "${{ inputs.fail_on || 'signature' }}" ${{ matrix.paths }}
