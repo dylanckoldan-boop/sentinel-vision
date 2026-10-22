@@ -111,17 +111,23 @@ class Sentinel:
             log.exception("moving local data into the protection service failed (kept locally)")
         r = t.call("policy.get")[0]
         if not r.get("policy"):
-            t.call(
-                "policy.set", {"policy": policy_from_settings(self.settings), "global": self._global_from_settings()}
-            )
-            self.db.log_event("service", "Protection settings are now guarded by the protection service")
-        else:
-            apply_policy(self.settings, r["policy"])  # the protected copy wins over the settings file
+            from sentinel_vision import autostart
+
+            try:  # carry over the user's existing start-at-sign-in choice
+                self.settings.keep_running = bool(autostart.is_enabled())
+            except Exception:
+                log.debug("could not read the start-at-sign-in setting", exc_info=True)
+            # first start for this account: register its own settings. Machine-wide blocking is only sent where it
+            # adds protection (another account may already have turned it on; turning it off needs approval).
             g = r.get("global") or {}
-            self.settings.webshield_block_hosts = bool(
-                g.get("webshield_block_hosts", self.settings.webshield_block_hosts)
-            )
-            self.settings.firewall_block = bool(g.get("firewall_block", self.settings.firewall_block))
+            first_global = {k: v for k, v in self._global_from_settings().items() if v and not g.get(k)}
+            t.call("policy.set", {"policy": policy_from_settings(self.settings), "global": first_global})
+            self.db.log_event("service", "Protection settings are now guarded by the protection service")
+            r = t.call("policy.get")[0]
+        apply_policy(self.settings, r["policy"])  # the protected copy wins over the settings file
+        g = r.get("global") or {}
+        self.settings.webshield_block_hosts = bool(g.get("webshield_block_hosts", False))
+        self.settings.firewall_block = bool(g.get("firewall_block", False))
 
     def save_settings(self) -> None:
         """Save settings. With the protection service, a change that weakens protection raises
@@ -209,6 +215,10 @@ class Sentinel:
         """Persist settings and re-apply them to running subsystems after the user changes them.
         Raises :class:`ProtectionChangeNeedsAdmin` (nothing applied) when the change needs administrator approval."""
         self.save_settings()
+        self.apply_runtime()
+
+    def apply_runtime(self) -> None:
+        """Re-apply the current settings to running subsystems (no saving)."""
         key = self._current_engine_key()
         if key != self._engine_key:  # rebuilding compiles every YARA rule, so only do it when needed
             self.scanner.build_engines()

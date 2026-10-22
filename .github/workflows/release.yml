@@ -50,7 +50,7 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
       WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-      INNO_VERSION: "7.1.0"
+      INNO_VERSION: "6.7.1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -119,7 +119,7 @@ jobs:
   windows-installer-test:
     needs: [version, windows]
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -127,108 +127,25 @@ jobs:
         with:
           name: windows
           path: out
-      - name: Install, verify, upgrade, relaunch and uninstall
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: packaging/windows
+      - name: Upgrade from the previous release, protection service, tamper protection, uninstall
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          function Assert($cond, $msg) { if (-not $cond) { throw "ASSERTION FAILED: $msg" } else { Write-Host "OK  $msg" } }
-          function Invoke-Setup([string]$exe, [string[]]$arguments, [string]$label) {
-            # Start-Process -Wait would also wait for programs the installer launches (the app itself), so wait
-            # for the installer process only, with a timeout.
-            $proc = Start-Process $exe -ArgumentList $arguments -PassThru
-            $null = $proc.Handle
-            if (-not $proc.WaitForExit(300000)) { throw "$label did not finish within 5 minutes" }
-            if ($proc.ExitCode -ne 0) { throw "$label exit code $($proc.ExitCode)" }
-            Write-Host "OK  $label finished"
-          }
-          function Annotate([string]$text) {
-            # Surface diagnostics as a check-run annotation (readable without downloading logs).
-            $enc = $text.Replace('%', '%25').Replace("`r", '').Replace("`n", '%0A')
-            Write-Host "::error title=Windows installer test::$enc"
-          }
           try {
-          $setup = (Resolve-Path "out\SentinelVision-$env:VERSION-Setup.exe").Path
-          $app = Join-Path $env:LOCALAPPDATA 'Programs\Sentinel Vision'
-          $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-
-          Write-Host "== silent per-user install with start-at-sign-in and PATH"
-          Invoke-Setup $setup @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER','/TASKS="autostart,addtopath"','/LOG="install1.log"') "first install"
-          Assert (Test-Path "$app\SentinelVision.exe") "GUI executable installed"
-          Assert (Test-Path "$app\sentinel-vision-cli.exe") "CLI executable installed"
-          Assert (Test-Path "$app\unins000.exe") "uninstaller installed"
-          Assert (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Sentinel Vision.lnk") "Start menu shortcut created"
-          $run = (Get-ItemProperty $runKey).SentinelVision
-          Assert ($run -eq "`"$app\SentinelVision.exe`" --minimized") "start-at-sign-in registered: $run"
-          $userPath = (Get-ItemProperty 'HKCU:\Environment').Path
-          Assert ($userPath -like "*$app*") "install folder added to user PATH"
-
-          Write-Host "== command-line tool"
-          & "$app\sentinel-vision-cli.exe" --version
-          Assert ($LASTEXITCODE -eq 0) "cli --version"
-          $status = & "$app\sentinel-vision-cli.exe" status | Out-String
-          Write-Host $status
-          Assert ($LASTEXITCODE -eq 0) "cli status exit code 0"
-          Assert ($status -match 'start at sign-in:\s+on') "cli reports start at sign-in on"
-          $samples = Join-Path $env:RUNNER_TEMP 'samples'
-          New-Item -ItemType Directory -Force $samples | Out-Null
-          [IO.File]::WriteAllBytes("$samples\invoice.pdf.exe", [byte[]](@(0x4D,0x5A) + (,0 * 512)))
-          [IO.File]::WriteAllText("$samples\notes.txt", "hello")
-          & "$app\sentinel-vision-cli.exe" scan $samples --no-quarantine
-          Assert ($LASTEXITCODE -eq 1) "cli scan finds the disguised executable (exit code 1)"
-
-          Write-Host "== GUI starts hidden in the tray and stays running"
-          $gui = Start-Process "$app\SentinelVision.exe" -ArgumentList '--minimized' -PassThru
-          Start-Sleep -Seconds 25
-          Assert (-not $gui.HasExited) "GUI still running after 25 s"
-          $log = Join-Path $env:LOCALAPPDATA 'SentinelVision\logs\sentinel.log'
-          if (Test-Path $log) { Get-Content $log -Tail 40 }
-          if (Test-Path $log) { Assert (-not (Select-String -Path $log -Pattern 'Traceback' -Quiet)) "no Python tracebacks in the app log" }
-
-          $decoy = Join-Path ([Environment]::GetFolderPath('MyDocuments')) '!Budget 2026.docx'
-          if (Test-Path ([Environment]::GetFolderPath('MyDocuments'))) {
-            Assert (Test-Path -LiteralPath $decoy) "ransomware decoy planted in Documents"
-            $attrs = (Get-Item -LiteralPath $decoy -Force).Attributes
-            Assert (($attrs -band [IO.FileAttributes]::Hidden) -ne 0) "decoy is hidden"
-          }
-
-          Write-Host "== upgrade over the running app (installer must close it)"
-          Invoke-Setup $setup @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LOG="install2.log"') "upgrade over running app"
-          Start-Sleep -Seconds 3
-          Assert ($null -eq (Get-Process SentinelVision -ErrorAction SilentlyContinue)) "running app was closed for the upgrade"
-          Assert ((Get-ItemProperty $runKey).SentinelVision -eq "`"$app\SentinelVision.exe`" --minimized") "previous options kept on upgrade"
-
-          Write-Host "== self-update style install relaunches the app"
-          Invoke-Setup $setup @('/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/RELAUNCH=1','/LOG="install3.log"') "self-update style install"
-          Start-Sleep -Seconds 15
-          Assert ($null -ne (Get-Process SentinelVision -ErrorAction SilentlyContinue)) "app relaunched after /RELAUNCH=1 install"
-
-          Write-Host "== unticking start-at-sign-in on upgrade removes it"
-          Invoke-Setup $setup @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS="addtopath"','/LOG="install4.log"') "install without start-at-sign-in"
-          Assert ($null -eq (Get-ItemProperty $runKey -Name SentinelVision -ErrorAction SilentlyContinue)) "start-at-sign-in removed"
-
-          Write-Host "== silent uninstall"
-          & "$app\sentinel-vision-cli.exe" autostart on | Out-Host
-          Assert ($null -ne (Get-ItemProperty $runKey -Name SentinelVision -ErrorAction SilentlyContinue)) "app can turn start-at-sign-in on"
-          Invoke-Setup "$app\unins000.exe" @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') "uninstaller"
-          $deadline = (Get-Date).AddSeconds(90)
-          while ((Test-Path "$app\SentinelVision.exe") -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
-          Assert (-not (Test-Path "$app\SentinelVision.exe")) "program files removed"
-          Assert ($null -eq (Get-ItemProperty $runKey -Name SentinelVision -ErrorAction SilentlyContinue)) "start-at-sign-in removed by uninstaller"
-          $userPath = (Get-ItemProperty 'HKCU:\Environment').Path
-          Assert (-not ($userPath -like "*$app*")) "PATH entry removed"
-          Assert ($null -eq (Get-Process SentinelVision -ErrorAction SilentlyContinue)) "no app process left running"
-          Assert (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Sentinel Vision.lnk")) "Start menu shortcut removed"
-          Assert (-not (Test-Path -LiteralPath $decoy)) "ransomware decoys removed by the uninstaller"
-          Write-Host "Windows installer lifecycle: ALL CHECKS PASSED"
-          Write-Host "::notice title=Windows installer test::Install, CLI, GUI, upgrade, relaunch, option change and uninstall all passed"
+            & packaging/windows/test-installer.ps1 -Setup (Resolve-Path "out\SentinelVision-$env:VERSION-Setup.exe").Path
           } catch {
             $details = "$($_.Exception.Message)`n"
-            foreach ($f in @('install1.log','install2.log','install3.log','install4.log')) {
-              if (Test-Path $f) { $details += "--- $f (tail)`n" + ((Get-Content $f -Tail 15) -join "`n") + "`n" }
+            foreach ($f in @('prev-install.log','install1.log','install2.log','install3.log','install4.log')) {
+              if (Test-Path $f) { $details += "--- $f (tail)`n" + ((Get-Content $f -Tail 12) -join "`n") + "`n" }
             }
+            $svclog = Join-Path $env:ProgramData 'SentinelVision\Service\service.log'
+            if (Test-Path $svclog) { $details += "--- service.log (tail)`n" + ((Get-Content $svclog -Tail 25) -join "`n") + "`n" }
             $log = Join-Path $env:LOCALAPPDATA 'SentinelVision\logs\sentinel.log'
-            if (Test-Path $log) { $details += "--- sentinel.log (tail)`n" + ((Get-Content $log -Tail 25) -join "`n") }
-            Annotate $details
+            if (Test-Path $log) { $details += "--- sentinel.log (tail)`n" + ((Get-Content $log -Tail 20) -join "`n") }
+            $enc = $details.Replace('%', '%25').Replace("`r", '').Replace("`n", '%0A')
+            Write-Host "::error title=Windows installer test::$enc"
             throw
           }
       - name: Upload installer logs

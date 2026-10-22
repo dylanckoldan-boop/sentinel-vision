@@ -232,6 +232,35 @@ class SettingsPage(Page):
             f"Last update: {ago(last)} · {self.s.db.hash_count():,} hashes · {self.s.intel.count:,} malicious networks"
         )
 
+    def load(self) -> None:
+        """Show the settings in force (used after a change was not approved)."""
+        st = self.s.settings
+        self.sched_quick.setChecked(st.schedule_quick_daily)
+        self.sched_full.setChecked(st.schedule_full_weekly)
+        self.sched_mem.setChecked(st.schedule_memory_scan)
+        self.sched_hour.setValue(st.schedule_hour)
+        self.sched_day.setCurrentIndex(st.schedule_full_weekday)
+        self.rw_folders.setPlainText("\n".join(st.ransomware_folders))
+        self.vault_mb.setValue(st.vault_max_mb)
+        self.rw_suspend.setChecked(st.ransomware_auto_suspend)
+        self.cloud.setChecked(st.cloud_lookup)
+        self.quiet.setChecked(st.quiet_mode)
+        self.auto_hours.setValue(st.auto_update_hours)
+        self.freshclam.setChecked(st.run_freshclam)
+        for i, f in enumerate(st.feeds):
+            if i < self.feeds.count():
+                self.feeds.item(i).setCheckState(Qt.Checked if f.enabled else Qt.Unchecked)
+        self.e_hash.setChecked(st.hash_enabled)
+        self.e_yara.setChecked(st.yara_enabled)
+        self.e_clam.setChecked(st.clamav_enabled)
+        self.e_heur.setChecked(st.heuristics_enabled)
+        self.threshold.setValue(st.heuristic_threshold)
+        self.heur_q.setChecked(st.auto_quarantine_heuristics)
+        self.max_size.setValue(st.max_file_size_mb)
+        self.archives.setChecked(st.scan_archives)
+        self.exclusions.setPlainText("\n".join(st.exclusions))
+        self.app_updates.setChecked(st.check_app_updates)
+
     def _collect(self) -> None:
         st = self.s.settings
         st.schedule_quick_daily = self.sched_quick.isChecked()
@@ -272,15 +301,18 @@ class SettingsPage(Page):
 
     def save(self) -> None:
         self._collect()
-        self.s.apply_settings()
+        saved = self.commit_settings()
         self.ctx.bridge.status_changed.emit()
-        self.ctx.notify("Settings saved", "Your changes are active.", "info")
+        if saved:
+            self.ctx.notify("Settings saved", "Your changes are active.", "info")
+        else:
+            self.load()  # show the settings that are actually in force
 
     def run_update(self) -> None:
         if self.task is not None:
             return
         self._collect()
-        self.s.settings.save()
+        self.commit_settings(apply=False)
         self.b_update.setEnabled(False)
         self.b_update.setText("Updating…")
         self.update_log.setPlainText("")

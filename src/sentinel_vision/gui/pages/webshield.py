@@ -62,7 +62,8 @@ class WebShieldPage(Page):
         bl.addWidget(
             label(
                 "Adds known malware and phishing sites to your computer's hosts file so no browser or app can "
-                "reach them. Needs administrator permission each time it's turned on or refreshed. Large "
+                "reach them. On Windows the protection service keeps it up to date; turning it off asks for "
+                "administrator permission. Elsewhere it asks each time it's turned on or refreshed. Large "
                 "platforms (Google, Microsoft, GitHub…) are never blocked as a whole.",
                 "muted",
                 wrap=True,
@@ -118,6 +119,12 @@ class WebShieldPage(Page):
             QMessageBox.information(self, "Web Shield", "Download the lists first: Settings & updates → Update now.")
             return
         self.s.settings.webshield_block_hosts = on
+        if self.s.service is not None:
+            # the protection service applies it from its own lists: no prompt to turn on; off needs approval
+            self.block_msg.setText("Applying…" if on else "Waiting for administrator approval…")
+            ok = self.commit_settings(apply=False)
+            self._done(on, 0 if ok else "administrator approval was not given")
+            return
         self.s.settings.save()
         args = ["webshield-apply", "--db", str(self.s.domains.path)] if on else ["webshield-remove"]
         self.block_msg.setText("Waiting for administrator permission…")

@@ -4,7 +4,8 @@
 # Produces one folder ("dist/SentinelVision", or "dist/SentinelVision.app" on macOS) containing:
 #   SentinelVision(.exe)          the desktop app (no console window)
 #   sentinel-vision-cli(.exe)     the command-line tool (console)
-# Both executables share one set of libraries.
+#   sentinel-vision-service.exe   Windows only: the protection service (runs as LocalSystem)
+# All executables share one set of libraries.
 import os
 import re
 import sys
@@ -22,6 +23,10 @@ NUMERIC = tuple(int(x) for x in re.findall(r"\d+", VERSION)[:3]) + (0,)
 
 datas = collect_data_files("sentinel_vision", includes=["rules/*.yar", "rules/*.yara"])
 hidden = collect_submodules("sentinel_vision") + collect_submodules("watchdog.observers")
+# pywin32 modules are imported inside functions (Windows only), so PyInstaller can't see them on its own
+WIN_CLIENT = ["win32file", "win32pipe", "win32api", "win32security", "pywintypes"] if sys.platform == "win32" else []
+WIN_SERVICE = WIN_CLIENT + ["win32ts", "win32profile", "win32process", "win32con", "win32service",
+                            "win32serviceutil", "servicemanager", "win32timezone", "win32event"]  # fmt: skip
 excludes = ["tkinter", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.Qt3DCore", "PySide6.QtQuick3D"]
 
 version_file = None
@@ -66,7 +71,7 @@ a = Analysis(
     [os.path.join(SPEC_DIR, "launcher.py")],
     pathex=[SRC],
     datas=datas,
-    hiddenimports=hidden,
+    hiddenimports=hidden + WIN_CLIENT,
     excludes=excludes,
     noarchive=False,
 )
@@ -74,10 +79,20 @@ cli = Analysis(
     [os.path.join(SPEC_DIR, "launcher_cli.py")],
     pathex=[SRC],
     datas=datas,
-    hiddenimports=[m for m in hidden if not m.startswith("sentinel_vision.gui")],
+    hiddenimports=[m for m in hidden if not m.startswith("sentinel_vision.gui")] + WIN_CLIENT,
     excludes=excludes + ["PySide6"],
     noarchive=False,
 )
+svc = None
+if sys.platform == "win32":
+    svc = Analysis(
+        [os.path.join(SPEC_DIR, "launcher_service.py")],
+        pathex=[SRC],
+        datas=datas,
+        hiddenimports=[m for m in hidden if not m.startswith("sentinel_vision.gui")] + WIN_SERVICE,
+        excludes=excludes + ["PySide6"],
+        noarchive=False,
+    )
 
 pyz = PYZ(a.pure)
 gui_exe = EXE(
@@ -103,6 +118,20 @@ cli_exe = EXE(
     version=version_file,
     upx=False,
 )
+extra = []
+if svc is not None:
+    svc_exe = EXE(
+        PYZ(svc.pure),
+        svc.scripts,
+        [],
+        exclude_binaries=True,
+        name="sentinel-vision-service",
+        console=True,
+        icon=icon,
+        version=version_file,
+        upx=False,
+    )
+    extra = [svc_exe, svc.binaries, svc.datas]
 coll = COLLECT(
     gui_exe,
     a.binaries,
@@ -110,6 +139,7 @@ coll = COLLECT(
     cli_exe,
     cli.binaries,
     cli.datas,
+    *extra,
     name="SentinelVision",
     upx=False,
 )

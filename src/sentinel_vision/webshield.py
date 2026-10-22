@@ -503,7 +503,7 @@ def run_elevated(args: list[str]) -> int:
         info.nShow = 0
         if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(info)):  # type: ignore[attr-defined]
             raise OSError("administrator permission was not granted")
-        ctypes.windll.kernel32.WaitForSingleObject(info.hProcess, 120000)  # type: ignore[attr-defined]
+        ctypes.windll.kernel32.WaitForSingleObject(info.hProcess, 600000)  # type: ignore[attr-defined]  # time to read the confirmation
         code = wintypes.DWORD()
         ctypes.windll.kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code))  # type: ignore[attr-defined]
         ctypes.windll.kernel32.CloseHandle(info.hProcess)  # type: ignore[attr-defined]

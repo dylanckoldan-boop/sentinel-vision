@@ -103,6 +103,9 @@ class PipeTransport:  # pragma: no cover - Windows only, exercised by the Window
                 if exc.winerror == 231 and time.time() < deadline:  # ERROR_PIPE_BUSY
                     win32pipe.WaitNamedPipe(PIPE_NAME, 1000)
                     continue
+                if exc.winerror == 2 and time.time() < deadline:  # not listening yet (service starting)
+                    time.sleep(0.5)
+                    continue
                 raise OSError(f"protection service not reachable: {exc.strerror}") from exc
         if _server_session(self.h) != 0:
             win32file.CloseHandle(self.h)
@@ -167,10 +170,19 @@ class ResilientTransport:  # pragma: no cover - Windows only
         self._t.close()
 
 
+def service_installed() -> bool:
+    """True for the Windows installer's build (the service program sits next to the app)."""
+    return (
+        bool(getattr(sys, "frozen", False)) and (Path(sys.executable).parent / "sentinel-vision-service.exe").exists()
+    )
+
+
 def connect(timeout: float = 2.0):
     """A transport to the protection service, or None when it isn't installed/running (or not on Windows)."""
     if sys.platform != "win32" or os.environ.get("SENTINEL_VISION_NO_SERVICE") == "1":
         return None
+    if service_installed():
+        timeout = max(timeout, 20.0)  # installed: it may still be starting (sign-in, just after an update)
     try:
         t = ResilientTransport(timeout)
         t.call("ping")

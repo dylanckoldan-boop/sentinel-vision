@@ -256,3 +256,64 @@ def test_firewall_rules_never_block_local_or_huge_ranges():
     assert rules == 1
     assert sum(1 for c in cmds if c[3] == "delete") == 4  # previous 2 rules, both directions
     assert all("remoteip=" in c[-1] for c in cmds if c[3] == "add")
+
+
+def test_elevated_helper_shows_and_applies_only_confirmed_changes(core, tmp_path):
+    import json
+
+    from sentinel_vision import protect
+    from sentinel_vision.service_client import LocalTransport
+
+    s = Settings()
+    core.handle(ALICE, "policy.set", {"policy": policy_from_settings(s)})
+    weaker = policy_from_settings(s)
+    weaker["realtime_enabled"] = False
+    weaker["exclusions"] = ["C:\\\\Games"]
+    f = tmp_path / "change.json"
+    f.write_text(json.dumps({"sid": ALICE.sid, "policy": weaker, "global": {}}))
+    shown = []
+    # not elevated: refused outright
+    assert protect.privileged_main(["protect-apply", str(f)], transport=LocalTransport(core, ALICE)) == protect.FAILED
+    # elevated, user says no
+    no = protect.privileged_main(
+        ["protect-apply", str(f)],
+        confirm_fn=lambda t, x: shown.append(x) or False,
+        transport=LocalTransport(core, ALICE_ADMIN),
+    )
+    assert no == protect.DECLINED and core.policy(ALICE.sid)["realtime_enabled"] is True
+    assert "Turn off real-time file protection" in shown[0] and "Add to exclusions: C:\\\\Games" in shown[0]
+    # elevated, user says yes
+    yes = protect.privileged_main(
+        ["protect-apply", str(f)], confirm_fn=lambda t, x: True, transport=LocalTransport(core, ALICE_ADMIN)
+    )
+    assert yes == protect.APPLIED and core.policy(ALICE.sid)["realtime_enabled"] is False
+    # pausing protection
+    assert (
+        protect.privileged_main(
+            ["protect-pause", "--sid", ALICE.sid, "--session", "1"],
+            confirm_fn=lambda t, x: True,
+            transport=LocalTransport(core, ALICE_ADMIN),
+        )
+        == protect.APPLIED
+    )
+    assert (ALICE.sid, 1) in core.paused
+
+
+def test_second_account_starts_fine_when_machine_wide_blocking_is_on(core, isolated_home):
+    from sentinel_vision.core import Sentinel
+    from sentinel_vision.service_client import LocalTransport
+
+    s = Settings()
+    s.realtime_enabled = s.network_enabled = False
+    s.feeds = []
+    s.webshield_block_hosts = True
+    a = Sentinel(s, service=LocalTransport(core, ALICE))
+    assert core.global_policy()["webshield_block_hosts"] is True
+    a.shutdown()
+    s2 = Settings()  # Bob's own settings have blocking off
+    s2.realtime_enabled = s2.network_enabled = False
+    s2.feeds = []
+    b = Sentinel(s2, service=LocalTransport(core, BOB))  # must not be refused
+    assert b.settings.webshield_block_hosts is True  # shows the machine-wide state
+    assert core.global_policy()["webshield_block_hosts"] is True
+    b.shutdown()

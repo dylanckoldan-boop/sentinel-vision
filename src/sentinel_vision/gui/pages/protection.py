@@ -52,8 +52,14 @@ class ProtectionPage(Page):
         self.usb_toggle = QCheckBox("Scan USB drives when connected")
         self.privacy_toggle = QCheckBox("Alert when an app uses the camera or microphone")
         self.netsec_toggle = QCheckBox("Watch for router spoofing and DNS hijacking")
-        for w in (self.usb_toggle, self.privacy_toggle, self.netsec_toggle):
+        self.fw_toggle = QCheckBox("Block known criminal networks in Windows Firewall")
+        self.fw_toggle.setToolTip(
+            "Applied by the protection service from Spamhaus DROP, Feodo Tracker and Emerging Threats lists. "
+            "Local and private networks are never blocked."
+        )
+        for w in (self.usb_toggle, self.privacy_toggle, self.netsec_toggle, self.fw_toggle):
             left.addWidget(w)
+        self.fw_toggle.setVisible(self.s.service is not None)
         left.addStretch(1)
         self.auto_q = QCheckBox("Quarantine signature detections automatically")
         self.kill_mal = QCheckBox("End programs confirmed as malware")
@@ -133,6 +139,7 @@ class ProtectionPage(Page):
         self.usb_toggle.toggled.connect(lambda on: self._set("usb_autoscan", on, apply=True))
         self.privacy_toggle.toggled.connect(lambda on: self._set("privacy_monitor", on, apply=True))
         self.netsec_toggle.toggled.connect(lambda on: self._set("netsec_enabled", on, apply=True))
+        self.fw_toggle.toggled.connect(lambda on: self._set("firewall_block", on))
         self.b_add.clicked.connect(self._add)
         self.b_rm.clicked.connect(self._remove)
         self._sync()
@@ -151,6 +158,7 @@ class ProtectionPage(Page):
             (self.usb_toggle, st.usb_autoscan),
             (self.privacy_toggle, st.privacy_monitor),
             (self.netsec_toggle, st.netsec_enabled),
+            (self.fw_toggle, st.firewall_block),
         )
         for w, v in pairs:
             w.blockSignals(True)
@@ -173,14 +181,18 @@ class ProtectionPage(Page):
 
     def _set(self, key: str, value: bool, apply: bool = False) -> None:
         setattr(self.s.settings, key, value)
+        self.commit_settings(apply)
         if apply:
-            self.s.apply_settings()
             self.ctx.bridge.status_changed.emit()
-        else:
-            self.s.settings.save()
         self.refresh()
 
     def _toggle_login(self, on: bool) -> None:
+        if self.s.service is not None:
+            # with the protection service, "start at sign-in" also means "restart if closed" and is guarded
+            self.s.settings.keep_running = on
+            if not self.commit_settings(apply=False):
+                self._sync_login()
+                return
         try:
             autostart.set_enabled(on)
         except autostart.AutostartError as exc:
@@ -192,7 +204,7 @@ class ProtectionPage(Page):
         if d and d not in self.s.settings.watch_paths:
             self.s.settings.watch_paths.append(d)
             self._sync()
-            self.s.apply_settings()
+            self.commit_settings()
             self.refresh()
 
     def _remove(self) -> None:
@@ -200,7 +212,7 @@ class ProtectionPage(Page):
             if item.text() in self.s.settings.watch_paths:
                 self.s.settings.watch_paths.remove(item.text())
         self._sync()
-        self.s.apply_settings()
+        self.commit_settings()
         self.refresh()
 
     def refresh(self) -> None:
