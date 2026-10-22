@@ -30,7 +30,8 @@ This release combines the planned 0.3.2 (fewer false alarms, pinned build tools)
 - **Calmer, more honest scan results.** Results are split into *threats* and *items to review*. Pattern rules meant
   for memory are no longer used on files; automatically generated rules, dual-use tool rules and noisy rules only
   produce items to review; validly signed programs and files in Program Files / system folders are not quarantined
-  on pattern matches; app caches and app data are never quarantined on a pattern match alone. Exact matches
+  on pattern matches; app caches, app data and package caches (update packages, extension bundles) are never
+  quarantined on a pattern match alone, including findings inside archives. Exact matches
   (known-malware hashes) are still quarantined everywhere. Coin-miner detection now needs a real mining-pool address.
   Oversized archives are a review note, not a threat. The command line exits with 1 only for threats.
 - **Installs into Program Files** (needs administrator permission once). Upgrading from 0.3.x moves everything
