@@ -151,7 +151,10 @@ Assert ($r -notmatch 'Report 1\.txt' -and $r -match 'rollback_exit=0') "an ordin
 Write-Host "== the app with the service"
 $gui = Start-Process "$newApp\SentinelVision.exe" -ArgumentList '--minimized' -PassThru
 Start-Sleep -Seconds 25
-Assert (-not $gui.HasExited) "GUI running after 25 s"
+$running = @(Get-Process SentinelVision -ErrorAction SilentlyContinue)
+Write-Host "app processes: $($running.Count); started copy exited: $($gui.HasExited)$(if ($gui.HasExited) { " (code $($gui.ExitCode))" })"
+# if the watchdog already started the app for this session, the second copy hands over and exits with 0
+Assert ($running.Count -ge 1 -and (-not $gui.HasExited -or $gui.ExitCode -eq 0)) "app running after 25 s"
 $log = Join-Path $env:LOCALAPPDATA 'SentinelVision\logs\sentinel.log'
 if (Test-Path $log) { Assert (-not (Select-String -Path $log -Pattern 'Traceback' -Quiet)) "no Python tracebacks in the app log" }
 $mySession = (Get-Process -Id $PID).SessionId
