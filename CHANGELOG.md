@@ -3,6 +3,47 @@
 All notable changes to Sentinel Vision are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-10-22
+
+This release combines the planned 0.3.2 (fewer false alarms, pinned build tools) with 0.4.0 (tamper protection).
+
+### Added
+- **Tamper protection (Windows).** A new *Sentinel Vision Protection* service runs as LocalSystem and keeps the
+  rollback vault, the quarantine and your protection settings in `%ProgramData%\SentinelVision\Service`, which
+  ordinary programs can't read, change or delete. Each Windows account has its own vault and quarantine.
+- **Administrator approval to weaken protection.** Turning a protection off, adding exclusions, removing protected
+  folders, turning off system-wide blocking and quitting the app now need administrator approval, with a clear list
+  of what will change. Turning protections *on* never asks. Refused attempts are shown as alerts.
+- **Watchdog.** The service starts the app when you sign in and restarts it if something closes it (with limits so a
+  crashing app can't loop). If the app stops responding it's restarted.
+- **Firewall blocking.** The service blocks known-malicious networks (Spamhaus DROP, Feodo Tracker, Emerging Threats)
+  in Windows Firewall for the whole computer, and keeps system-wide website blocking up to date, every 6 hours, from
+  lists it downloads itself. Can be turned off (with approval).
+- **Ransomware:** detects *intermittent* encryption (only parts of a file encrypted) and *slow* encryption
+  (20 files in 10 minutes).
+- **Scheduled memory scan** alongside the scheduled full scan.
+- **Checkup:** warns when Chrome, Edge, Brave or Firefox use secure DNS that bypasses website blocking.
+- `sentinel-vision-cli service` shows the service status; `--self-test` checks that weakening is refused without
+  approval.
+
+### Changed
+- **Calmer, more honest scan results.** Results are split into *threats* and *items to review*. Pattern rules meant
+  for memory are no longer used on files; automatically generated rules, dual-use tool rules and noisy rules only
+  produce items to review; validly signed programs and files in Program Files / system folders are not quarantined
+  on pattern matches; app caches and app data are never quarantined on a pattern match alone. Exact matches
+  (known-malware hashes) are still quarantined everywhere. Coin-miner detection now needs a real mining-pool address.
+  Oversized archives are a review note, not a threat. The command line exits with 1 only for threats.
+- **Installs into Program Files** (needs administrator permission once). Upgrading from 0.3.x moves everything
+  automatically: see *Upgrading from 0.3.x* in `docs/INSTALL.md`.
+- **abuse.ch feeds:** URLhaus and ThreatFox now require a free abuse.ch Auth-Key (abuse.ch retired the old
+  key-free addresses). Enter it in Settings → Threat feeds; it's stored encrypted with Windows DPAPI.
+- **Build pinning:** every GitHub Action is pinned to a commit, Python build/signing/website tools are installed from
+  hash-locked lists, and Inno Setup is pinned to 6.7.1.
+- The false-positive audit now installs everyday Windows apps and scans Windows, macOS and Linux systems in full.
+
+### Fixed
+- USB and scheduled-scan notifications could say "threats found" when there were only items to review.
+
 ## [0.3.1] - 2026-10-11
 
 ### Added
@@ -139,6 +180,8 @@ Source-only release (no downloadable builds).
 - First release: hash, YARA, ClamAV and heuristic engines; real-time protection; encrypted quarantine; live traffic
   monitor with threat intelligence; threat-feed updater; PySide6 GUI; CLI and daemon; CI on Windows, macOS and Linux.
 
+[0.4.0]: https://github.com/dylanckoldan-boop/sentinel-vision/compare/v0.3.1...v0.4.0
+[0.3.1]: https://github.com/dylanckoldan-boop/sentinel-vision/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/dylanckoldan-boop/sentinel-vision/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/dylanckoldan-boop/sentinel-vision/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/dylanckoldan-boop/sentinel-vision/releases/tag/v0.2.0

@@ -7,6 +7,7 @@
 - [Any OS — from source with Python](#any-os--from-source-with-python)
 - [After installing: steps for full protection](#after-installing-steps-for-full-protection)
 - [Updating](#updating)
+- [Upgrading from 0.3.x](#upgrading-from-03x)
 - [Uninstalling](#uninstalling)
 - [Troubleshooting](#troubleshooting)
 
@@ -16,16 +17,18 @@ All downloads are on the [Releases page](https://github.com/dylanckoldan-boop/se
 
 ## Windows — installer (recommended)
 
-Requires Windows 10 or 11 (64-bit). No administrator rights needed.
+Requires Windows 10 or 11 (64-bit) and administrator permission once, during installation.
 
 1. Download **`SentinelVision-<version>-Setup.exe`** from the [latest release](https://github.com/dylanckoldan-boop/sentinel-vision/releases/latest).
 2. Double-click it.
 3. If Windows shows **"Windows protected your PC"**, click **More info → Run anyway**.
    This appears because the app is not code-signed yet (a certificate costs money); it is not a sign of malware.
    You can verify the file first — see [Verifying a download](#verifying-a-download).
-4. Choose **Install for me only** (recommended, no admin rights) or **Install for all users**.
-5. Accept the MIT license and keep the defaults. Make sure **"Start Sentinel Vision automatically when I sign in"** stays
-   ticked — protection only runs while the app runs.
+4. Approve the administrator prompt. Sentinel Vision always installs into **Program Files**, where other programs can't
+   change its files, and installs the **Sentinel Vision Protection** service, which keeps the rollback vault,
+   quarantine and protection settings out of reach of other programs.
+5. Accept the MIT license and keep the defaults. Make sure **"Start Sentinel Vision when I sign in and restart it if it
+   is closed"** stays ticked.
    Optional: *Create a desktop shortcut* and *Add the sentinel-vision-cli command-line tool to PATH*.
 6. Click **Install**, then **Finish** with *Launch Sentinel Vision now* ticked.
 7. Continue with [the steps for full protection](#after-installing-steps-for-full-protection).
@@ -36,10 +39,15 @@ click the **^** arrow if it is hidden). Click the shield icon to open it; right-
 **Silent / scripted install** (for IT admins):
 
 ```
-SentinelVision-<version>-Setup.exe /VERYSILENT /CURRENTUSER /TASKS="autostart,addtopath"
+SentinelVision-<version>-Setup.exe /VERYSILENT /TASKS="autostart,addtopath"
 ```
 
-`/ALLUSERS` installs for everyone (needs admin). Leave `autostart` out of `/TASKS` to not start at sign-in.
+Run it from an administrator prompt (or approve the prompt). Leave `autostart` out of `/TASKS` to not start at sign-in.
+
+**What needs administrator approval afterwards** (so other programs can't do it silently): turning a protection off,
+adding exclusions, removing protected folders, turning off system-wide blocking, and quitting the app. Turning things
+*on* never does. Run `sentinel-vision-cli service --self-test` in a normal (not elevated) window to check that this
+works on your computer.
 
 ## Windows — portable zip
 
@@ -47,7 +55,8 @@ SentinelVision-<version>-Setup.exe /VERYSILENT /CURRENTUSER /TASKS="autostart,ad
 2. Run **`SentinelVision.exe`** inside the extracted `SentinelVision` folder.
 3. On first start it asks whether to start automatically at sign-in.
 
-The portable build does not update itself; download new versions from the Releases page.
+The portable build does not update itself; download new versions from the Releases page. It has no protection service,
+so its data and settings stay in your own folder (like on macOS and Linux).
 
 ## macOS
 
@@ -118,18 +127,39 @@ Keep Microsoft Defender / XProtect turned on as well: Sentinel Vision is designe
 ## Updating
 
 - **Windows installer**: the app checks for new versions every 6 hours and shows a banner — click **Update now**.
-  The installer is downloaded, its SHA-256 checked, and the app upgraded and restarted. Settings, history and quarantine
-  are kept. You can also run a newer Setup.exe over the existing install at any time.
+  The installer is downloaded, its post-quantum signature and SHA-256 checked, and the app upgraded and restarted
+  (Windows asks for administrator permission). Settings, history, quarantine and rollback vault are kept. You can also
+  run a newer Setup.exe over the existing install at any time.
 - **Portable, macOS, Linux**: the banner links to the new release; download and replace the old copy.
 - **From source**: `git pull` (or download the new ZIP) and run the `pip install .` step again.
+
+## Upgrading from 0.3.x
+
+Versions 0.3.x installed into your own folder (`%LOCALAPPDATA%\Programs\Sentinel Vision`). Installing 0.4 or later —
+through the app's **Update now** banner or by running the new Setup.exe — does this automatically:
+
+1. Windows asks for administrator permission once (the new version goes into Program Files).
+2. The old app is closed, the new one is installed in `C:\Program Files\Sentinel Vision`, and the protection service
+   is installed and started.
+3. The old copy, its uninstall entry, Start menu shortcut and PATH entry are removed. This clean-up runs with your
+   normal rights, and nothing from the old folder is ever run with administrator rights. Your *start at sign-in*
+   choice is kept.
+4. On its first start, the new app moves your rollback vault and quarantine into the protected storage (they are
+   removed from your own folder only after the service confirmed each item), and the service starts guarding your
+   protection settings.
+
+Nothing else changes: definitions, history, exclusions and settings carry over.
 
 ## Uninstalling
 
 - **Windows installer**: *Settings → Apps → Installed apps → Sentinel Vision → Uninstall* (or *Add or remove programs*).
-  The uninstaller closes the app, removes start-at-sign-in and the PATH entry, and asks whether to delete your data.
+  The uninstaller stops and removes the protection service, removes system-wide website and firewall blocking,
+  start-at-sign-in, the PATH entry and the hidden decoy files, and asks whether to delete Sentinel Vision's data
+  (for every account on the computer). A silent uninstall keeps the data.
 - **Everything else**: turn off *Start at sign-in* on the Protection page (or `sentinel-vision-cli autostart off`),
   quit from the tray icon, then delete the app folder.
-- Your data lives in `%LOCALAPPDATA%\SentinelVision` (Windows), `~/Library/Application Support/SentinelVision` (macOS)
+- Your data lives in `%LOCALAPPDATA%\SentinelVision` plus, for the vault, quarantine and protected settings,
+  `%ProgramData%\SentinelVision\Service` (Windows), `~/Library/Application Support/SentinelVision` (macOS)
   or `~/.local/share/SentinelVision` (Linux).
 
 ## Verifying a download

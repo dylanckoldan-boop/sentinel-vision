@@ -123,13 +123,15 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: packaging/windows
+          persist-credentials: false
+      # after the checkout, which empties the workspace
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows
           path: out
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          sparse-checkout: packaging/windows
       - name: Upgrade from the previous release, protection service, tamper protection, uninstall
         shell: pwsh
         run: |

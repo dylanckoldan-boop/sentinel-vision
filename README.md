@@ -34,10 +34,14 @@
 
 1. Download **`SentinelVision-<version>-Setup.exe`** from the [latest release](https://github.com/dylanckoldan-boop/sentinel-vision/releases/latest).
 2. Run it. If Windows shows *"Windows protected your PC"*, click **More info → Run anyway** (the app isn't code-signed yet — [why](docs/CODE_SIGNING.md)).
-3. Keep **"Start Sentinel Vision automatically when I sign in"** ticked and click **Install**. No administrator rights needed.
+3. Keep **"Start Sentinel Vision when I sign in and restart it if it is closed"** ticked and click **Install**.
+   Windows asks for administrator permission once: Sentinel Vision installs into **Program Files**, where other programs
+   can't change it, together with the **Sentinel Vision Protection** service that guards its data and settings.
 4. In the app, open **Settings & updates → Update now** to download the latest threat definitions.
 
 That's it — Sentinel Vision now starts hidden in the system tray every time you sign in, and updates itself.
+Upgrading from 0.3.x (installed in your own folder) moves everything to Program Files automatically and keeps your
+settings, quarantine and rollback vault — see [the upgrade notes](docs/INSTALL.md#upgrading-from-03x).
 
 ### macOS, Linux, portable and from source
 
@@ -49,12 +53,14 @@ updating, uninstalling and troubleshooting.
 | | |
 |---|---|
 | **4 detection engines** | Hash blocklists (MD5/SHA-1/SHA-256) · YARA (bundled rules + [YARA Forge](https://yarahq.github.io/) + your own) · ClamAV (via `clamd` or `clamscan`) · static heuristics for unknown threats, with Windows Authenticode and catalog-signature checks to avoid false alarms on signed software |
+| **Calm, honest results** | Threats are separated from *items to review* (machine-generated rule hints, dual-use tools, findings in installed programs' folders). Automatic quarantine only for exact known-malware matches, or strong matches on programs in your own folders — never caches, app databases or installed software. Audited weekly against everyday Windows apps (Steam, Office, Adobe Reader, VLC, …). |
+| **Tamper protection (Windows)** | The *Sentinel Vision Protection* service keeps the rollback vault, quarantine and protection settings in a folder only Windows and administrators can open. Other programs can't delete them, and turning protection off, adding exclusions or quitting needs your administrator approval. It restarts the app if something closes it, and tells you. |
 | **Real-time protection** | Watches Downloads, Desktop, Documents, temp and autostart folders; new or changed files are scanned the moment they finish writing and known malware is quarantined automatically |
 | **Behavior monitoring** | Every new program is checked for attack techniques (malicious-document shells, download-and-run PowerShell, ransomware deleting backups, LOLBin abuse, reverse shells, miners) and its executable is scanned; confirmed malware is ended and quarantined. Auto-start locations are watched for new persistence. |
-| **Ransomware shield & rollback** | Hidden decoy files and encryption-burst detection catch ransomware in the act and freeze the program responsible; every good version of your documents is kept in an encrypted vault so you can roll back to before the attack |
-| **Web Shield** | Hundreds of thousands of malware and phishing domains from four free feeds, blocked system-wide for every browser and app (optional), plus a local link checker that catches look-alike brands and homograph tricks |
+| **Ransomware shield & rollback** | Hidden decoy files plus fast *and* slow encryption detection — including ransomware that leaves the start of each file intact — catch ransomware in the act and freeze the program responsible; every good version of your documents is kept in an encrypted vault so you can roll back to before the attack |
+| **Web Shield & firewall** | Hundreds of thousands of malware and phishing domains, blocked system-wide for every browser and app (optional), plus a local link checker that catches look-alike brands and homograph tricks. On Windows, known criminal networks (Spamhaus DROP, Feodo Tracker, Emerging Threats) are blocked in Windows Firewall by the protection service. |
 | **Security checkup** | A score for your computer's settings — firewall, encryption, updates, outdated apps, Remote Desktop, SMBv1, Secure Boot, Wi-Fi — with exact fixes; plus router-spoofing (ARP) and DNS-hijack detection |
-| **Memory scan** | Finds fileless malware in the memory of running programs |
+| **Memory scan** | Finds fileless malware in the memory of running programs — on demand and with every weekly full scan |
 | **Privacy & tools** | Camera/microphone use alerts, password breach check (k-anonymity: the password never leaves your device), file shredder, quiet mode |
 | **USB & schedules** | USB drives scanned the moment they're connected; daily quick and weekly full scans |
 | **Live traffic monitor** | Every TCP/UDP connection mapped to its process, checked against botnet-C2 and criminal-netblock feeds, with a live throughput graph, alerts, *End process*, *Block IP* (OS firewall) and reputation lookup |
@@ -135,7 +141,8 @@ Security software is a high-value target, so Sentinel Vision is built defensivel
 * **Safe updates.** HTTPS only (TLS 1.2+, certificate verification always on, HTTPS-only redirects), download size limits, YARA archives are extracted file-by-file with flattened names (no path traversal), and new rules are compile-checked then swapped in atomically — a bad update never removes working protection. App updates are verified against the release's SHA-256 checksums before they run.
 * **Encrypted quarantine.** AES-256-GCM with a per-install key stored owner-only; per-chunk nonces and authenticated position/final-chunk flags detect tampering, reordering and truncation; restores are verified against the original SHA-256 and never overwrite existing files.
 * **Post-quantum signed updates.** Release checksums are signed with ML-DSA-65 (NIST FIPS 204) and Ed25519; both must verify, and the app refuses unsigned or older installers. Stored data uses AES-256-GCM, which keeps 128-bit security even against quantum computers. Details in [the comparison](docs/COMPARISON.md#post-quantum-design).
-* **Careful automatic actions.** Only signature-confirmed malware and the actual backup-deletion tools are ended automatically; heuristic and technique alerts are report-only by default. Pattern matches on validly signed programs, and anything short of an exact match on operating-system files, are reported rather than removed.
+* **Careful automatic actions.** Only signature-confirmed malware and the actual backup-deletion tools are ended automatically; heuristic and technique alerts are report-only by default. Pattern matches on validly signed programs, caches and app databases, installed programs' folders, and anything short of an exact match on operating-system files, are reported rather than removed.
+* **Tamper protection (Windows).** Installed in Program Files (only administrators can change it). The protection service (LocalSystem) keeps each account's vault, quarantine and protection settings in a folder with a protected SYSTEM/Administrators-only ACL that it re-checks (and refuses to follow links in) at every start; each account only reaches its own data; the service only stores and returns bytes and never writes into users' folders; weakening changes need an elevated caller; its named pipe rejects remote clients, and the app only talks to a pipe owned by a Windows service (session 0). Machine-wide blocking uses lists the service downloads itself, never lists supplied by other programs.
 * **No shell, ever.** External tools (`netsh`, `iptables`, `clamscan`, `freshclam`, `taskkill`) are called with argument lists; IPs are validated before any firewall rule is built; private/loopback addresses can't be blocked.
 * **Private by default.** No telemetry. Your files never leave your machine — only hash/IP feeds and update metadata are downloaded. Data lives in an owner-only directory.
 * **Self-protection from false positives.** The app's own install and data directories are excluded so its signature files are never "detected".
@@ -151,9 +158,12 @@ replacement for an OS-integrated antivirus — keep Microsoft Defender / XProtec
   *before* they open. Ransomware is stopped by decoys and burst detection within seconds, and files it touched can be rolled back. Blocking first requires OS-level hooks that need vendor approval (Windows minifilter drivers,
   macOS Endpoint Security) or root (Linux fanotify — on the [roadmap](ROADMAP.md)).
 * Builds are not yet code-signed, so Windows and macOS show a warning on first launch ([how to fix that](docs/CODE_SIGNING.md)).
+* Tamper protection stops malware running with **your** rights. Malware that already has administrator rights can still
+  stop the service — only kernel-level protection (which needs Microsoft's signature) prevents that. On macOS and
+  Linux there is no protection service yet: data and settings live in your own folder.
 * Network throughput is system-wide; per-process bandwidth isn't available portably yet.
-* System-wide website blocking uses the hosts file: it needs administrator permission when turned on or refreshed, and blocks whole host names (not individual pages).
-* The rollback vault lives on the same disk with your user's permissions; ransomware running as administrator could damage it. Keep an offline/cloud backup too.
+* System-wide website blocking uses the hosts file and blocks whole host names (not individual pages). Browsers set to their own "secure DNS only" mode can skip it — the Security checkup tells you if one is.
+* The rollback vault lives on the same disk as your documents. On Windows other programs can't reach it, but a disk failure or ransomware with administrator rights could still destroy it. Keep an offline/cloud backup too.
 * On macOS, scanning protected folders needs Full Disk Access and seeing every process's connections needs admin rights.
 * Detection quality depends on the feeds and rules you enable — keep definitions updated and add ClamAV.
 
@@ -161,7 +171,7 @@ replacement for an OS-integrated antivirus — keep Microsoft Defender / XProtec
 
 | | |
 |---|---|
-| Windows | `%LOCALAPPDATA%\SentinelVision` |
+| Windows | `%LOCALAPPDATA%\SentinelVision` (vault, quarantine and protected settings: `%ProgramData%\SentinelVision\Service`, administrators only) |
 | macOS | `~/Library/Application Support/SentinelVision` |
 | Linux | `~/.local/share/SentinelVision` |
 
