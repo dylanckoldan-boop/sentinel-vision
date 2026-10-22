@@ -156,3 +156,45 @@ def test_findings_in_program_and_system_folders_are_items_to_review():
     exact = next(d for d in tool.detections if d.engine == "hash")
     assert yara_hit.details.get("report_only") and not yara_hit.is_signature
     assert not exact.details.get("report_only") and exact.is_signature  # known malware stays a threat
+
+
+def test_findings_inside_archives_follow_the_same_rules(sentinel, isolated_home, fake_windows_dirs):
+    """The full-scan audit: update packages and extension bundles (.vsix, .nupkg) in Program Files, ProgramData
+    and AppData were shown as threats because findings inside archives skipped the location rules."""
+    import zipfile
+
+    from sentinel_vision.config import sub_dir
+
+    (sub_dir("rules/custom") / "t.yar").write_text(
+        'rule T_Real_Malware { meta: severity = "high" strings: $a = "ZZ-ARCHIVE-TOKEN" condition: $a }'
+    )
+    sentinel.scanner.reload_signatures()
+    d = fake_windows_dirs
+
+    def package(folder):
+        folder.mkdir(parents=True, exist_ok=True)
+        p = folder / "payload.vsix"
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("lib/inner.dll", b"MZ....ZZ-ARCHIVE-TOKEN....")
+        return p
+
+    downloads = d["LOCALAPPDATA"].parent / "Users" / "x" / "Downloads"
+    for folder, threat in (
+        (d["ProgramFiles"] / "Microsoft Visual Studio" / "Ext", False),
+        (d["ProgramData"] / "chocolatey" / "lib" / "pkg", False),
+        (d["LOCALAPPDATA"] / "Discord" / "packages", False),
+        (downloads, True),  # a download is still a threat, and is quarantined
+    ):
+        top = sentinel.scanner.scan_file(package(folder), act=False)[0]
+        assert top.detections, folder
+        assert sentinel.scanner.should_quarantine(top) is threat, folder
+        assert top.needs_review_only is (not threat), folder
+
+
+def test_programs_dropped_in_app_data_stay_threats():
+    from sentinel_vision.scanner import Scanner
+
+    dropped = _res(r"C:\Users\x\AppData\Roaming\evil\update.exe", "program", "appdata",
+                   Detection("yara", "SV_Something_Bad", Severity.HIGH))  # fmt: skip
+    Scanner._apply_location_context(dropped)
+    assert not dropped.detections[0].details.get("report_only")

@@ -79,6 +79,7 @@ class ScanResult:
     origin: str = "scan"
     kind: str = ""  # policy.file_kind: "program" | "script" | "data"
     where: str = ""  # policy.location: "program" | "appdata" | "user"
+    in_archive: bool = False  # a member of an archive (can't run until someone extracts it)
 
     @property
     def infected(self) -> bool:
@@ -337,6 +338,12 @@ class Scanner:
                 r.detections, errs = self.scan_object(member)
                 if errs:
                     r.error = "; ".join(errs)
+                # the same calm-results rules as for files on disk; the archive's own folder decides the context
+                r.kind = policy.file_kind(member.head, name)
+                r.where = policy.location(display)
+                r.in_archive = True
+                self._drop_generated_rule_noise(r)
+                self._apply_location_context(r)
                 yield r
                 yield from self._scan_archive(member, depth + 1, origin)
         finally:
@@ -425,8 +432,20 @@ class Scanner:
 
         * heuristic guesses below High are not shown;
         * other pattern and heuristic findings are shown as items to review, never as threats;
-        * exact matches (known-malware hash, ClamAV, cloud lookup) stay threats and are acted on as usual."""
-        if not res.detections or not (res.where == "program" or is_system_path(res.path)):
+        * exact matches (known-malware hash, ClamAV, cloud lookup) stay threats and are acted on as usual.
+
+        App data and package caches (AppData, ProgramData, ~/Library, ~/.cache…): archives, packages and other data
+        there (update packages, extension bundles, package-manager caches) are never run as they are, so pattern
+        and heuristic findings in them are items to review. Programs and scripts there stay threats."""
+        if not res.detections:
+            return
+        if res.where == "appdata" and (res.kind == "data" or res.in_archive):
+            for d in res.detections:
+                if d.engine not in EXACT_ENGINES and not d.details.get("report_only"):
+                    d.details["report_only"] = True
+                    d.description += " (in an app's data or package cache: reported for review)"
+            return
+        if not (res.where == "program" or is_system_path(res.path)):
             return
         quiet = [d for d in res.detections if d.engine == "heuristics" and d.severity < Severity.HIGH]
         for d in quiet:
