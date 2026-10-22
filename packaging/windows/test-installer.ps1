@@ -117,6 +117,12 @@ $cred = New-Object System.Management.Automation.PSCredential('svtest', $pw)
 $results = 'C:\Users\Public\svtest-results.txt'
 $probe = @"
 `$out = '$results'
+# Start-Process -Credential passes on the runner's environment; use this account's own folders
+`$env:LOCALAPPDATA = [Environment]::GetFolderPath('LocalApplicationData')
+`$env:APPDATA = [Environment]::GetFolderPath('ApplicationData')
+`$env:USERPROFILE = [Environment]::GetFolderPath('UserProfile')
+`$env:TEMP = Join-Path `$env:LOCALAPPDATA 'Temp'; `$env:TMP = `$env:TEMP
+New-Item -ItemType Directory -Force `$env:TEMP | Out-Null
 function W([string]`$t) { Add-Content -LiteralPath `$out -Value `$t -Encoding UTF8 }
 Set-Content -LiteralPath `$out -Value 'start' -Encoding UTF8
 try { Remove-Item '$data' -Recurse -Force -ErrorAction Stop; W 'DELETE_DATA_ALLOWED' } catch { W "delete_data_denied (`$(`$_.Exception.GetType().Name))" }
