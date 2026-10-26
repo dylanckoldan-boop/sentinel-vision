@@ -370,6 +370,7 @@ class Watchdog:
         self.cooldown: dict[tuple[str, int], float] = {}
         self.seen_session: set[tuple[str, int]] = set()
         self._skipped: set[int] = set()
+        self._last_state: dict[tuple[str, int], str] = {}
 
     def run(self) -> None:
         while not self.stop.wait(WATCH_INTERVAL):
@@ -413,16 +414,31 @@ class Watchdog:
                 log.debug("process check skipped: %s", exc)
         return pids
 
+    def _state(self, key: tuple[str, int], state: str) -> None:
+        """Log what the watchdog decided for a session whenever that changes (for diagnosing it)."""
+        if self._last_state.get(key) != state:
+            self._last_state[key] = state
+            log.info("watchdog: session %s: %s", key[1], state)
+
     def tick(self) -> None:
         now = time.time()
         for session, sid in self._sessions():
             key = (sid, session)
             pol = self.core.policy(sid)
-            if not pol or not pol.get("keep_running", True) or key in self.core.paused:
-                continue  # app never used by this account, or the user turned this off / stopped protection
+            if not pol:
+                self._state(key, "account has not used Sentinel Vision")
+                continue
+            if not pol.get("keep_running", True):
+                self._state(key, "start-at-sign-in is off")
+                continue
+            if key in self.core.paused:
+                self._state(key, "protection stopped by the user until sign-out")
+                continue
             if self.cooldown.get(key, 0) > now:
+                self._state(key, "restarts paused")
                 continue
             pids = self._app_pids(session)
+            self._state(key, f"app running (process {', '.join(map(str, pids))})" if pids else "app not running")
             first = key not in self.seen_session
             self.seen_session.add(key)
             if pids:
