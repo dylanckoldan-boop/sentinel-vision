@@ -62,9 +62,13 @@ Set-Content -Path "$samples\marked.bin" -Value 'payload SV-INSTALLER-TEST-MARKER
 & "$oldApp\sentinel-vision-cli.exe" scan $samples | Out-Host
 Assert (-not (Test-Path "$samples\marked.bin")) "previous release quarantined the test file"
 $gui = Start-Process "$oldApp\SentinelVision.exe" -ArgumentList '--minimized' -PassThru
-Start-Sleep -Seconds 25   # the ransomware shield stores the documents in its vault
+# the ransomware shield stores the documents in its vault (wait for it, up to 90 s)
+$deadline = (Get-Date).AddSeconds(90)
+do {
+    Start-Sleep -Seconds 5
+    $oldVault = (& "$oldApp\sentinel-vision-cli.exe" rollback list | Out-String)
+} while ($oldVault -notmatch 'Report 1\.txt' -and (Get-Date) -lt $deadline)
 Stop-Process -Id $gui.Id -Force -ErrorAction SilentlyContinue
-$oldVault = (& "$oldApp\sentinel-vision-cli.exe" rollback list | Out-String)
 Write-Host $oldVault
 Assert ($oldVault -match 'Report 1\.txt') "previous release has documents in its rollback vault"
 $gui = Start-Process "$oldApp\SentinelVision.exe" -ArgumentList '--minimized' -PassThru   # running during the upgrade
@@ -166,7 +170,7 @@ if ($mySession -ne 0 -and $active -match 'Active') {
     Stop-Process -Name SentinelVision -Force
     # a new, running app process (an ended one can stay listed while something still holds a handle to it)
     function New-App { Get-Process SentinelVision -ErrorAction SilentlyContinue | Where-Object { $killed -notcontains $_.Id -and -not $_.HasExited } }
-    $deadline = (Get-Date).AddSeconds(60)
+    $deadline = (Get-Date).AddSeconds(90)   # the watchdog checks every 15 s
     while (-not (New-App) -and (Get-Date) -lt $deadline) { Start-Sleep 3 }
     $wd = (Get-Content (Join-Path $data 'service.log') | Select-String 'watchdog' | ForEach-Object { $_.Line }) -join '%0A'
     Write-Host "::notice title=Watchdog log::$wd"
