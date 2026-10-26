@@ -48,7 +48,7 @@ BOOL_ON = (
     "schedule_memory_scan", "keep_running",
 )  # fmt: skip
 LIST_KEEP = ("ransomware_folders", "watch_paths", "enabled_feeds")  # removing an entry weakens
-LIST_GROW = ("exclusions",)  # adding an entry weakens
+LIST_GROW = ("exclusions", "approved_plugins")  # adding an entry weakens
 NUM_LOWER_IS_STRONGER = ("heuristic_threshold",)
 NUM_HIGHER_IS_STRONGER = ("max_file_size_mb", "vault_max_mb", "vault_keep_versions")
 GLOBAL_BOOL_ON = ("webshield_block_hosts", "firewall_block")  # machine-wide
@@ -64,6 +64,7 @@ LABELS = {
     "auto_quarantine": "automatic quarantine",
     "keep_running": "starting at sign-in and restarting if closed",
     "exclusions": "exclusions",
+    "approved_plugins": "allowed plugins",
     "ransomware_folders": "ransomware-protected folders",
     "watch_paths": "real-time protected folders",
     "enabled_feeds": "threat-definition sources",
@@ -188,6 +189,7 @@ class ServiceCore:
         self._lock = threading.RLock()
         self._vaults: dict[str, RollbackVault] = {}
         self._quarantines: dict[str, Quarantine] = {}
+        self._plugin_logs: dict = {}
         self._transfers: dict[str, _Transfer] = {}
         self.events: list[Event] = []
         self.heartbeats: dict[tuple[str, int], tuple[float, int]] = {}  # (sid, session) -> (time, pid)
@@ -379,6 +381,46 @@ class ServiceCore:
         if g.get("firewall_block"):
             out["firewall"] = self.applier.apply_firewall()
         return out
+
+    # ------------------------------------------------------------------ plugin logs (append-only)
+    def _plugin_log(self, sid: str, name: str):
+        from sentinel_vision.pluginlog import AppendOnlyLog, PluginLogError, check_name
+
+        try:
+            check_name(name)
+        except PluginLogError as exc:
+            raise ServiceError("bad_request", str(exc)) from exc
+        key = (sid, name)
+        with self._lock:
+            log_ = self._plugin_logs.get(key)
+            if log_ is None:
+                log_ = self._plugin_logs[key] = AppendOnlyLog(self._user_dir(sid) / "plugins" / name / "log.jsonl")
+            return log_
+
+    def op_plugin_append(self, c: Caller, a: dict, p: bytes) -> dict:
+        """Add a record to the caller's own log for a plugin. Records can be added, never changed or removed."""
+        from sentinel_vision.pluginlog import PluginLogError
+
+        try:
+            return self._plugin_log(c.sid, str(a.get("name", ""))).append(
+                a.get("record"), pid=c.pid, elevated=c.elevated
+            )
+        except PluginLogError as exc:
+            raise ServiceError("bad_request", str(exc)) from exc
+
+    def op_plugin_read(self, c: Caller, a: dict, p: bytes) -> dict:
+        from sentinel_vision.pluginlog import PluginLogError
+
+        sid = str(a.get("sid", c.sid))
+        if sid != c.sid and not c.elevated:
+            raise ServiceError("denied", "another account's records")
+        try:
+            log_ = self._plugin_log(sid, str(a.get("name", "")))
+            entries = log_.read(int(a.get("since", 0)), int(a.get("limit", 1000)))
+            ok, count = log_.verify() if a.get("verify") else (None, None)
+        except PluginLogError as exc:
+            raise ServiceError("bad_request", str(exc)) from exc
+        return {"entries": entries, "intact": ok, "count": count}
 
     # ------------------------------------------------------------------ rollback vault
     @staticmethod

@@ -103,6 +103,8 @@ Filename: "{app}\{#CliExe}"; Parameters: "uninstall-cleanup"; Flags: runhidden w
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\_internal"
+; plugins an administrator added (upgrades keep them; uninstalling removes them)
+Type: filesandordirs; Name: "{app}\plugins"
 
 [Code]
 const

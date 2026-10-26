@@ -564,6 +564,8 @@ def privacy() -> str:
       <li>The rollback vault: encrypted copies of earlier versions of documents in the folders you protect, up to
       the size limit you set (5&nbsp;GB by default).</li>
       <li>Downloaded threat lists and the app's logs.</li>
+      <li>Records kept for plugins you allowed (for example a companion program's audit log), only if you install
+      one.</li>
     </ul>
     <p>These are stored in <code>%LOCALAPPDATA%\\SentinelVision</code> on Windows,
     <code>~/Library/Application Support/SentinelVision</code> on macOS and <code>~/.local/share/SentinelVision</code>

@@ -107,6 +107,15 @@ sentinel-vision-cli shred secret.pdf            # securely delete
 sentinel-vision-cli daemon                      # headless real-time + behavior + ransomware + network protection
 ```
 
+For companion programs and plugins (see [docs/PLUGINS.md](docs/PLUGINS.md)):
+
+```bash
+sentinel-vision-cli quarantine add FILE --reason "why"   # move a file into the quarantine, prints its id
+sentinel-vision-cli plugin-log append NAME --json '{...}' # append-only records (protected on Windows)
+sentinel-vision-cli net block 45.12.10.9                  # block a public address in the firewall (admin)
+sentinel-vision-cli plugins                               # plugins found, allowed or refused
+```
+
 Exit codes: `0` clean · `1` threats found · `2` error — handy for CI pipelines and cron jobs.
 
 ## How detection works
@@ -138,11 +147,12 @@ Security software is a high-value target, so Sentinel Vision is built defensivel
 
 * **Never executes what it scans.** Files are only read; `pefile`, `zipfile` and `tarfile` parse in memory and archive members are never written to disk.
 * **Hardened parsing.** Size caps, member-count caps, decompression-bomb checks, YARA match timeouts, and every engine runs inside its own error boundary so a malformed file can't stop a scan.
-* **Safe updates.** HTTPS only (TLS 1.2+, certificate verification always on, HTTPS-only redirects), download size limits, YARA archives are extracted file-by-file with flattened names (no path traversal), and new rules are compile-checked then swapped in atomically — a bad update never removes working protection. App updates are verified against the release's SHA-256 checksums before they run.
+* **Safe updates.** HTTPS only (TLS 1.2+, certificate verification always on against the bundled, regularly updated certificate list only — not the system store, whose blocked-authority list Python ignores — HTTPS-only redirects), download size limits, YARA archives are extracted file-by-file with flattened names (no path traversal), and new rules are compile-checked then swapped in atomically — a bad update never removes working protection. App updates are verified against the release's SHA-256 checksums before they run.
 * **Encrypted quarantine.** AES-256-GCM with a per-install key stored owner-only; per-chunk nonces and authenticated position/final-chunk flags detect tampering, reordering and truncation; restores are verified against the original SHA-256 and never overwrite existing files.
 * **Post-quantum signed updates.** Release checksums are signed with ML-DSA-65 (NIST FIPS 204) and Ed25519; both must verify, and the app refuses unsigned or older installers. Stored data uses AES-256-GCM, which keeps 128-bit security even against quantum computers. Details in [the comparison](docs/COMPARISON.md#post-quantum-design).
 * **Careful automatic actions.** Only signature-confirmed malware and the actual backup-deletion tools are ended automatically; heuristic and technique alerts are report-only by default. Pattern matches on validly signed programs, caches and app databases, installed programs' folders, and anything short of an exact match on operating-system files, are reported rather than removed.
 * **Tamper protection (Windows).** Installed in Program Files (only administrators can change it). The protection service (LocalSystem) keeps each account's vault, quarantine and protection settings in a folder with a protected SYSTEM/Administrators-only ACL that it re-checks (and refuses to follow links in) at every start; each account only reaches its own data; the service only stores and returns bytes and never writes into users' folders; weakening changes need an elevated caller; its named pipe rejects remote clients, and the app only talks to a pipe owned by a Windows service (session 0). Machine-wide blocking uses lists the service downloads itself, never lists supplied by other programs.
+* **Plugins only with consent.** Plugin pages load only from an administrator-only folder (installed Windows app) after a permission check, and only after the user allowed each one — with the service, that needs administrator approval. A broken plugin is skipped, never fatal. Details in [docs/PLUGINS.md](docs/PLUGINS.md).
 * **No shell, ever.** External tools (`netsh`, `iptables`, `clamscan`, `freshclam`, `taskkill`) are called with argument lists; IPs are validated before any firewall rule is built; private/loopback addresses can't be blocked.
 * **Private by default.** No telemetry. Your files never leave your machine — only hash/IP feeds and update metadata are downloaded. Data lives in an owner-only directory.
 * **Self-protection from false positives.** The app's own install and data directories are excluded so its signature files are never "detected".

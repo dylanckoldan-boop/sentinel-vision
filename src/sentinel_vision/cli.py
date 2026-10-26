@@ -129,6 +129,18 @@ def cmd_update(sv: Sentinel, _args) -> int:
 
 def cmd_quarantine(sv: Sentinel, args) -> int:
     q = sv.quarantine
+    if args.action == "add":
+        # for other programs (e.g. Agent Guard): prints only the new id on success; exit 2 with a message otherwise
+        from sentinel_vision.quarantine import QuarantineError
+
+        try:
+            item_id = q.add_external(args.id, args.reason or "", args.source)
+        except (QuarantineError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        sv.db.log_event("quarantine", f"Quarantined on request of {args.source}: {args.id}")
+        print(item_id)
+        return 0
     if args.action == "list":
         items = q.list()
         for i in items:
@@ -143,6 +155,20 @@ def cmd_quarantine(sv: Sentinel, args) -> int:
 
 
 def cmd_net(sv: Sentinel, args) -> int:
+    if args.action == "block":
+        from sentinel_vision.network.firewall import FirewallError, block_ip
+
+        if not args.ip:
+            print("usage: net block IP", file=sys.stderr)
+            return 2
+        try:
+            print(block_ip(args.ip))
+        except FirewallError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        sv.db.log_event("network", f"Blocked {args.ip.strip()} in the system firewall")
+        return 0
+
     def show() -> None:
         snap = sv.network.poll()
         rows = [c for c in snap.connections if c.rip or c.status == "LISTEN"]
@@ -309,6 +335,48 @@ def cmd_rollback(sv: Sentinel, args) -> int:
     for path, result in results:
         print(f"{_c(GRN if result == 'restored' else YEL, result):<20} {path}")
     print(f"{sum(r == 'restored' for _, r in results)} file(s) restored")
+    return 0
+
+
+def cmd_plugin_log(_sv, args) -> int:
+    """Append-only records for plugins (protected by the service on Windows). JSON in and out, for other programs."""
+    from sentinel_vision.plugin_api import PluginLogError, plugin_log
+
+    try:
+        log_ = plugin_log(args.name)
+        if args.action == "append":
+            raw = sys.stdin.read() if args.json in (None, "-") else args.json
+            record = json.loads(raw)
+            print(log_.append(record))
+        elif args.action == "read":
+            for e in log_.read(args.since, args.limit):
+                print(json.dumps(e, sort_keys=True))
+        else:
+            ok, count = log_.verify()
+            print(json.dumps({"intact": ok, "entries": count, "protected": log_.protected}))
+            return 0 if ok else 1
+    except (PluginLogError, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def cmd_plugins(sv: Sentinel, args) -> int:
+    from sentinel_vision import plugins
+
+    found = plugins.discover()
+    allowed = {x.lower() for x in sv.settings.approved_plugins}
+    root = plugins.plugins_root()
+    print(f"Plugins are loaded from: {root if root else 'packages installed in this Python environment'}")
+    for f in found:
+        state = (
+            f"refused: {f.problem}" if f.problem else "allowed" if f.fingerprint in allowed else "waiting for approval"
+        )
+        print(f"  {f.name} {f.version}  [{state}]  {f.location}")
+        if args.verbose:
+            print(f"    fingerprint {f.fingerprint}")
+    if not found:
+        print("  (none)")
     return 0
 
 
@@ -563,10 +631,21 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--json", action="store_true")
     sub.add_parser("update", help="download latest definitions")
     q = sub.add_parser("quarantine", help="manage quarantine")
-    q.add_argument("action", choices=["list", "restore", "delete"])
-    q.add_argument("id", nargs="?")
+    q.add_argument("action", choices=["list", "restore", "delete", "add"])
+    q.add_argument("id", nargs="?", help="item ID (restore, delete) or file path (add)")
     q.add_argument("--to", help="restore into this folder")
-    n = sub.add_parser("net", help="show live connections")
+    q.add_argument("--reason", help="add: why the file is being quarantined")
+    q.add_argument("--source", default="agent-guard", help="add: name of the program asking (default agent-guard)")
+    sub.add_parser("plugins", help="list plugins and whether they are allowed")
+    pl = sub.add_parser("plugin-log", help="append-only records for plugins (protected on Windows)")
+    pl.add_argument("action", choices=["append", "read", "verify"])
+    pl.add_argument("name", help="plugin name, e.g. agent-guard")
+    pl.add_argument("--json", help="append: the record as a JSON object (default: read from standard input)")
+    pl.add_argument("--since", type=int, default=0, help="read: entries after this sequence number")
+    pl.add_argument("--limit", type=int, default=1000)
+    n = sub.add_parser("net", help="show live connections, or block an address")
+    n.add_argument("action", nargs="?", choices=["block"], help="block IP: block a public address in the firewall")
+    n.add_argument("ip", nargs="?")
     n.add_argument("--watch", action="store_true")
     sub.add_parser("daemon", help="run real-time, behavior and network protection without GUI")
     sub.add_parser("status", help="engine status")
@@ -624,11 +703,13 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     setup_logging(args.verbose)
     if args.command == "quarantine" and args.action != "list" and not args.id:
-        print("quarantine restore/delete needs an ID (see `quarantine list`)", file=sys.stderr)
+        print("quarantine restore/delete needs an ID (see `quarantine list`); add needs a file path", file=sys.stderr)
         return 2
     if args.command == "rollback" and args.action != "list" and not args.target:
         print("rollback versions/restore/since needs a target (see --help)", file=sys.stderr)
         return 2
+    if args.command == "plugin-log":
+        return cmd_plugin_log(None, args)  # needs no scanner or definitions
     try:
         sv = Sentinel()
         handler = {
@@ -651,6 +732,7 @@ def main(argv: list[str] | None = None) -> int:
             "verify-release": cmd_verify_release,
             "uninstall-cleanup": cmd_uninstall_cleanup,
             "service": cmd_service,
+            "plugins": cmd_plugins,
         }[args.command]
         return handler(sv, args)
     except KeyboardInterrupt:

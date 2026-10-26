@@ -3,6 +3,29 @@
 All notable changes to Sentinel Vision are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-10-26
+
+### Security
+- **Certificate trust (eMudhra / emSign compromise, October 2026).** Every download now trusts only the bundled,
+  up-to-date certificate list (certifi 2026.10.23) and no longer the operating system's store. Python reads the
+  trusted certificates from the Windows store but never Windows' list of blocked ones, so authorities Microsoft has
+  distrusted were still trusted by the app. Without the bundled list, no download is made.
+- `net block` and the firewall's one-click block accept only public internet addresses, and pass rule names to
+  netsh in the form it expects.
+
+### Added
+- **Ways for companion programs to work with Sentinel Vision** (for example Agent Guard), all optional and described
+  in `docs/PLUGINS.md`:
+  - **Plugin pages** (entry point `sentinel_vision.plugins`). On the installed Windows app, plugins load only from the
+    administrator-only `Program Files\Sentinel Vision\plugins` folder, after a check that no ordinary user can change
+    them, and only after you allow each one. With the protection service, allowing a plugin needs administrator
+    approval. A broken plugin can't stop the app.
+  - `quarantine add PATH --reason TEXT`: moves a file into the (protected) quarantine and prints its id.
+  - `plugin-log append|read|verify NAME`: append-only, hash-chained records kept by the protection service, which
+    programs running as you can add to but not change or delete.
+  - `net block IP` and `plugins` (lists plugins and why any was refused).
+  - `sentinel_vision.plugin_api` for plugin authors.
+
 ## [0.4.0] - 2026-10-22
 
 This release combines the planned 0.3.2 (fewer false alarms, pinned build tools) with 0.4.0 (tamper protection).
@@ -181,6 +204,7 @@ Source-only release (no downloadable builds).
 - First release: hash, YARA, ClamAV and heuristic engines; real-time protection; encrypted quarantine; live traffic
   monitor with threat intelligence; threat-feed updater; PySide6 GUI; CLI and daemon; CI on Windows, macOS and Linux.
 
+[0.4.1]: https://github.com/dylanckoldan-boop/sentinel-vision/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/dylanckoldan-boop/sentinel-vision/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/dylanckoldan-boop/sentinel-vision/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/dylanckoldan-boop/sentinel-vision/compare/v0.2.1...v0.3.0

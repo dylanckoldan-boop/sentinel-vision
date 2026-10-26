@@ -47,6 +47,20 @@ def sub_dir(name: str) -> Path:
     return p
 
 
+def plugin_dir(name: str) -> Path:
+    """A private working folder for a plugin, in the user's own data folder (owner-only on macOS/Linux).
+
+    It is NOT protected from other programs running as the user. Records that must survive a compromised program
+    running as the user (audit trails, revocation lists) belong in ``sentinel_vision.plugin_api.plugin_log(name)``,
+    which the Windows protection service keeps append-only in its protected folder."""
+    from sentinel_vision.pluginlog import check_name
+
+    d = sub_dir("plugins") / check_name(name)
+    d.mkdir(parents=True, exist_ok=True)
+    _restrict(d)
+    return d
+
+
 def bundled_rules_dir() -> Path:
     return Path(__file__).resolve().parent / "rules"
 
@@ -194,6 +208,9 @@ class Settings:
     archive_max_ratio: int = 100
     scan_threads: int = max(2, min(8, (os.cpu_count() or 4)))
     exclusions: list[str] = field(default_factory=list)
+    # plugins the user allowed ("name@version#fingerprint", see plugins.py); protected like exclusions
+    approved_plugins: list[str] = field(default_factory=list)
+    declined_plugins: list[str] = field(default_factory=list)  # don't ask again
 
     # actions
     auto_quarantine: bool = True  # signature hits (hash / YARA high / ClamAV) are quarantined automatically

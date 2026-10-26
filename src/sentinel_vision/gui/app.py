@@ -114,6 +114,8 @@ class MainWindow(QMainWindow):
         self.buttons: dict[str, QPushButton] = {}
         group = QButtonGroup(self)
         group.setExclusive(True)
+        self._nav_group = group
+        self._sidebar_layout = sl
         for key, text, cls in NAV:
             page = cls(self.ctx)
             self.pages[key] = page
@@ -126,6 +128,7 @@ class MainWindow(QMainWindow):
             group.addButton(btn)
             self.buttons[key] = btn
             sl.addWidget(btn)
+        self._plugin_insert_at = sl.count()  # plugin buttons go after the built-in pages (loaded at the end)
         sl.addStretch(1)
         self.status_pill = QLabel()
         self.status_pill.setTextFormat(Qt.RichText)
@@ -209,6 +212,7 @@ class MainWindow(QMainWindow):
             self.service_timer.start(60_000)
             self._one_shot(3000, self._service_tick)
 
+        self._load_plugins()  # last: plugins get a fully built window (tray, notifications, navigation)
         self.navigate("overview")
         self._update_status()
 
@@ -337,6 +341,92 @@ class MainWindow(QMainWindow):
         self.banner_go.setEnabled(True)
         self.banner_go.setText("Update now")
         QMessageBox.critical(self, "Update failed", f"The update could not be installed:\n\n{err}")
+
+    # ------------------------------------------------------------------ plugins
+    def _load_plugins(self) -> None:
+        """Mount pages contributed by plugins the user allowed, and ask once about new ones. Never fails the app:
+        a broken plugin is logged and skipped. See plugins.py for where plugins may come from."""
+        try:
+            from sentinel_vision import plugins
+
+            found = plugins.discover()
+        except Exception as exc:
+            log.warning("could not look for plugins: %s", exc)
+            return
+        st = self.sentinel.settings
+        allowed = {x.lower() for x in st.approved_plugins}
+        declined = {x.lower() for x in st.declined_plugins}
+        new = []
+        for f in found:
+            if f.problem:
+                log.warning("plugin %s not loaded: %s", f.name, f.problem)
+            elif f.fingerprint in allowed:
+                self._mount_plugin(f)
+            elif f.fingerprint not in declined:
+                new.append(f)
+        if new:
+            self._one_shot(4000, lambda: self._ask_about_plugins(new))  # owned by the window: stops on shutdown
+
+    def _mount_plugin(self, found) -> None:
+        from sentinel_vision import plugins
+
+        try:
+            pages = plugins.load_pages(found)
+        except Exception as exc:
+            log.warning("plugin %s failed to load: %s", found.name, exc)
+            return
+        for p in pages:
+            if p.key in self.pages:
+                log.warning("plugin %s: page key %r is already used", found.name, p.key)
+                continue
+            try:
+                widget = p.factory(self.ctx)
+                host = PluginHost(widget)
+            except Exception as exc:
+                log.warning("plugin %s page %s failed: %s", found.name, p.key, exc)
+                continue
+            self.pages[p.key] = host
+            self.stack.addWidget(host)
+            btn = QPushButton(p.label)
+            btn.setObjectName("nav")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(f"Plugin: {found.name} {found.version}")
+            btn.clicked.connect(lambda _c=False, k=p.key: self.navigate(k))
+            self._nav_group.addButton(btn)
+            self.buttons[p.key] = btn
+            self._sidebar_layout.insertWidget(self._plugin_insert_at, btn)
+            self._plugin_insert_at += 1
+            log.info("plugin page %s (%s %s) added", p.key, found.name, found.version)
+
+    def _ask_about_plugins(self, new: list) -> None:
+        from sentinel_vision.gui.pages.base import commit_settings
+
+        st = self.sentinel.settings
+        for f in new:
+            if getattr(self, "_quitting", False):
+                return
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("Allow a plugin?")
+            box.setText(f"Sentinel Vision found a plugin: <b>{f.name} {f.version}</b>")
+            box.setInformativeText(
+                f"Location: {f.location}\n\nA plugin runs inside Sentinel Vision with the same rights, so it is "
+                "trusted as much as Sentinel Vision itself. Only allow plugins you installed yourself."
+            )
+            allow = box.addButton("Allow", QMessageBox.AcceptRole)
+            box.addButton("Don't allow", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is allow:
+                st.approved_plugins = [*st.approved_plugins, f.fingerprint]
+                if commit_settings(self, self.sentinel, apply=False):  # administrator approval with the service
+                    self._mount_plugin(f)
+            else:
+                st.declined_plugins = [*st.declined_plugins, f.fingerprint]
+                try:
+                    self.sentinel.save_settings()
+                except Exception as exc:
+                    log.warning("could not save the plugin choice: %s", exc)
 
     # ------------------------------------------------------------------ navigation
     def navigate(self, key: str, action: str | None = None) -> None:
@@ -526,6 +616,29 @@ class MainWindow(QMainWindow):
                 return
         self._quitting = True
         self.close()
+
+
+class PluginHost(QWidget):
+    """Holds a plugin's page: gives it the refresh interface the window expects and contains its errors."""
+
+    refresh_ms = 3000
+
+    def __init__(self, widget: QWidget) -> None:
+        super().__init__()
+        self.widget = widget
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(widget)
+        self._failed = False
+
+    def refresh(self) -> None:
+        fn = getattr(self.widget, "refresh", None)
+        if callable(fn) and not self._failed:
+            try:
+                fn()
+            except Exception as exc:
+                self._failed = True  # log once, then stop calling it
+                log.warning("plugin page refresh failed: %s", exc)
 
 
 def _single_instance(app: QApplication, show_existing: bool) -> QLocalServer | None:
