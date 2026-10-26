@@ -159,6 +159,11 @@ jobs:
           if (Test-Path progress.txt) { $details += "--- progress`n" + ((Get-Content progress.txt -Tail 8) -join "`n") + "`n" }
           $svclog = Join-Path $env:ProgramData 'SentinelVision\Service\service.log'
           if (Test-Path $svclog) { $details += "--- service.log (tail)`n" + ((Get-Content $svclog -Tail 15) -join "`n") + "`n" }
+          $ev = Join-Path $env:ProgramData 'SentinelVision\Service\events.log'
+          if (Test-Path $ev) { $details += "--- events.log (tail)`n" + ((Get-Content $ev -Tail 8) -join "`n") + "`n" }
+          $details += "--- sessions`n" + ((query user 2>&1 | Out-String).Trim()) + "`n"
+          $applog = Join-Path $env:LOCALAPPDATA 'SentinelVision\logs\sentinel.log'
+          if (Test-Path $applog) { $details += "--- sentinel.log (tail)`n" + ((Get-Content $applog -Tail 10) -join "`n") + "`n" }
           $hosts = Get-Item "$env:SystemRoot\System32\drivers\etc\hosts"
           $details += "--- hosts file: $([math]::Round($hosts.Length / 1MB, 1)) MB`n"
           $details += "--- processes: " + ((Get-Process SentinelVision, sentinel-vision-*, unins*, SentinelVision-* -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Name)($($_.Id))" }) -join ', ')

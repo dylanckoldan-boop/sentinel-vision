@@ -369,6 +369,7 @@ class Watchdog:
         self.restarts: dict[tuple[str, int], list[float]] = {}
         self.cooldown: dict[tuple[str, int], float] = {}
         self.seen_session: set[tuple[str, int]] = set()
+        self._skipped: set[int] = set()
 
     def run(self) -> None:
         while not self.stop.wait(WATCH_INTERVAL):
@@ -392,7 +393,9 @@ class Watchdog:
                 )
                 out.append((s["SessionId"], sid))
             except Exception as exc:  # a session without a usable user token (e.g. still signing in)
-                log.debug("session %s skipped: %s", s.get("SessionId"), exc)
+                if s["SessionId"] not in self._skipped:
+                    self._skipped.add(s["SessionId"])
+                    log.info("watchdog: session %s has no usable user token: %s", s.get("SessionId"), exc)
         return out
 
     def _app_pids(self, session: int) -> list[int]:
@@ -433,6 +436,7 @@ class Watchdog:
                     self._launch(session, key, now)
                 continue
             if first:
+                log.info("watchdog: session %s signed in without the app running; starting it", session)
                 self._launch(session, key, now)  # start at sign-in
                 continue
             # it was running in this session and is gone without the user stopping protection
@@ -449,6 +453,7 @@ class Watchdog:
                 )
                 continue
             self.core._event(sid, "watchdog", "Sentinel Vision was closed without your approval and was restarted")
+            log.info("watchdog: the app was closed in session %s; restarting it", session)
             self._launch(session, key, now)
 
     def _launch(self, session: int, key: tuple[str, int], now: float) -> None:
@@ -458,12 +463,13 @@ class Watchdog:
         import win32ts
 
         if not self.app.exists():
+            log.warning("watchdog: %s is missing", self.app)
             return
         tok = win32ts.WTSQueryUserToken(session)
         env = win32profile.CreateEnvironmentBlock(tok, False)
         si = win32process.STARTUPINFO()
         si.lpDesktop = "winsta0\\default"
-        win32process.CreateProcessAsUser(
+        info = win32process.CreateProcessAsUser(
             tok,
             str(self.app),
             f'"{self.app}" --minimized',
@@ -476,6 +482,7 @@ class Watchdog:
             si,
         )
         self.restarts.setdefault(key, []).append(now)
+        log.info("watchdog: started the app in session %s (process %s)", session, info[2])
 
     @staticmethod
     def _message(session: int, text: str) -> None:
