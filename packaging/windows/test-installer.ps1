@@ -165,6 +165,8 @@ if ($mySession -ne 0 -and $active -match 'Active') {
     Stop-Process -Name SentinelVision -Force
     $deadline = (Get-Date).AddSeconds(60)
     while (-not (Get-Process SentinelVision -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep 3 }
+    $wd = (Get-Content (Join-Path $data 'service.log') | Select-String 'watchdog' | ForEach-Object { $_.Line }) -join '%0A'
+    Write-Host "::notice title=Watchdog log::$wd"
     Assert (Get-Process SentinelVision -ErrorAction SilentlyContinue) "the service restarted the app after it was closed"
 } else {
     Write-Host "::notice title=Watchdog::not tested here (no interactive desktop session on this machine)"
