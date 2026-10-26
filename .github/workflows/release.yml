@@ -172,6 +172,41 @@ jobs:
           path: "*.log"
           if-no-files-found: ignore
 
+  windows-upgrade-test:
+    # the path an existing 0.4.x install takes: service already present, replaced while running
+    needs: [version, windows]
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: packaging/windows
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows
+          path: out
+      - name: Upgrade from 0.4.0 with the protection service running
+        timeout-minutes: 30
+        shell: pwsh
+        run: |
+          try {
+            & packaging/windows/test-upgrade.ps1 -Setup (Resolve-Path "out\SentinelVision-$env:VERSION-Setup.exe").Path -NewVersion $env:VERSION
+          } catch {
+            $details = "$($_.Exception.Message)`n"
+            if (Test-Path progress.txt) { $details += "--- progress`n" + ((Get-Content progress.txt) -join "`n") + "`n" }
+            foreach ($f in @('prev-install.log','upgrade.log')) {
+              if (Test-Path $f) { $details += "--- $f (tail)`n" + ((Get-Content $f -Tail 12) -join "`n") + "`n" }
+            }
+            $svclog = Join-Path $env:ProgramData 'SentinelVision\Service\service.log'
+            if (Test-Path $svclog) { $details += "--- service.log (tail)`n" + ((Get-Content $svclog -Tail 20) -join "`n") + "`n" }
+            $enc = $details.Replace('%', '%25').Replace("`r", '').Replace("`n", '%0A')
+            Write-Host "::error title=Windows upgrade test::$enc"
+            throw
+          }
+
   unix:
     needs: version
     strategy:
@@ -233,7 +268,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [version, windows, windows-installer-test, unix]
+    needs: [version, windows, windows-installer-test, windows-upgrade-test, unix]
     if: >-
       startsWith(github.ref, 'refs/tags/v') ||
       (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
