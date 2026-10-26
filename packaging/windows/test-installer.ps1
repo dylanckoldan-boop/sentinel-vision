@@ -162,12 +162,15 @@ $mySession = (Get-Process -Id $PID).SessionId
 $active = (query user 2>$null | Out-String)
 Write-Host "session $mySession; signed-in users:`n$active"
 if ($mySession -ne 0 -and $active -match 'Active') {
+    $killed = @(Get-Process SentinelVision -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
     Stop-Process -Name SentinelVision -Force
+    # a new, running app process (an ended one can stay listed while something still holds a handle to it)
+    function New-App { Get-Process SentinelVision -ErrorAction SilentlyContinue | Where-Object { $killed -notcontains $_.Id -and -not $_.HasExited } }
     $deadline = (Get-Date).AddSeconds(60)
-    while (-not (Get-Process SentinelVision -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep 3 }
+    while (-not (New-App) -and (Get-Date) -lt $deadline) { Start-Sleep 3 }
     $wd = (Get-Content (Join-Path $data 'service.log') | Select-String 'watchdog' | ForEach-Object { $_.Line }) -join '%0A'
     Write-Host "::notice title=Watchdog log::$wd"
-    Assert (Get-Process SentinelVision -ErrorAction SilentlyContinue) "the service restarted the app after it was closed"
+    Assert (New-App) "the service restarted the app after it was closed (ended: $($killed -join ', '))"
 } else {
     Write-Host "::notice title=Watchdog::not tested here (no interactive desktop session on this machine)"
 }

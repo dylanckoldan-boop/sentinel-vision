@@ -408,7 +408,7 @@ class Watchdog:
         for p in psutil.process_iter(["pid", "exe"]):
             try:
                 if p.info["exe"] and os.path.normcase(p.info["exe"]) == target:
-                    if win32ts.ProcessIdToSessionId(p.info["pid"]) == session:
+                    if win32ts.ProcessIdToSessionId(p.info["pid"]) == session and _alive(p.info["pid"]):
                         pids.append(p.info["pid"])
             except Exception as exc:  # process ended while we looked
                 log.debug("process check skipped: %s", exc)
@@ -508,6 +508,22 @@ class Watchdog:
             win32ts.WTSSendMessage(win32ts.WTS_CURRENT_SERVER_HANDLE, session, DISPLAY_NAME, text, 0x40, 60, False)
         except Exception as exc:
             log.info("could not show a message: %s", exc)
+
+
+def _alive(pid: int) -> bool:
+    """True while the process is still running. A process that has exited stays in the process list for as long
+    as any program holds a handle to it (for example the tool that ended it), so being listed isn't enough."""
+    try:
+        import win32api
+        import win32process
+
+        h = win32api.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        try:
+            return win32process.GetExitCodeProcess(h) == 259  # STILL_ACTIVE
+        finally:
+            win32api.CloseHandle(h)
+    except Exception:
+        return False  # gone, or not ours to open
 
 
 def _kill(pid: int) -> None:
