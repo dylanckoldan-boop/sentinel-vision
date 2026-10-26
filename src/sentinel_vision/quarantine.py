@@ -11,8 +11,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import struct
+import sys
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -44,6 +46,38 @@ class QuarantineItem:
     @property
     def vault_file(self) -> Path:
         return sub_dir("quarantine") / f"{self.id}.svq"
+
+
+# ---------------------------------------------------------------------------------------------- external requests
+EXTERNAL_SOURCE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,39}$")
+
+
+def external_labels(reason: str, source: str) -> tuple[str, str]:
+    """(threat, engine) recorded for a file another program asked to quarantine (for example Agent Guard)."""
+    if not EXTERNAL_SOURCE_RE.match(source or ""):
+        raise QuarantineError("source must be a short lower-case name (letters, digits, . _ -)")
+    text = " ".join(str(reason or "").split())[:200]
+    return (text or f"Sent to quarantine by {source}"), f"external:{source}"
+
+
+def external_target(path: str | Path) -> Path:
+    """The file another program asked to quarantine, after checks: an existing regular file (not a link), not part
+    of the operating system, and not part of Sentinel Vision itself (its program or its data)."""
+    from sentinel_vision.config import data_dir
+    from sentinel_vision.scanner import is_system_path
+
+    src = Path(path)
+    if src.is_symlink() or not src.is_file():
+        raise QuarantineError(f"not an existing regular file: {src}")
+    full = src.resolve()
+    if is_system_path(str(full)):
+        raise QuarantineError("operating-system files are never quarantined on request")
+    own = [data_dir().resolve()]
+    if getattr(sys, "frozen", False):
+        own.append(Path(sys.executable).resolve().parent)
+    if any(full == d or d in full.parents for d in own):
+        raise QuarantineError("Sentinel Vision's own files can't be quarantined")
+    return full
 
 
 def _write_private(path: Path, data: bytes) -> None:
@@ -90,6 +124,11 @@ class Quarantine:
             self.delete(item.id)
             raise QuarantineError(f"could not remove original file: {exc}") from exc
         return item
+
+    def add_external(self, path: str | Path, reason: str = "", source: str = "agent-guard") -> str:
+        """Quarantine a file another program found (moved: encrypted here, original removed). Returns the id."""
+        threat, engine = external_labels(reason, source)
+        return self.add(external_target(path), threat, engine).id
 
     def add_stream(self, fh, original_path: str, threat: str, engine: str) -> QuarantineItem:
         """Encrypt the content read from ``fh`` into the vault (the caller removes the original)."""

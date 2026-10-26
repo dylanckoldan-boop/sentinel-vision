@@ -27,6 +27,9 @@ You will get an acknowledgement within 72 hours. We aim to release a fix for con
 * Tamper-protection bypasses on Windows: a program running with a user's normal rights reading, changing or deleting
   the protected vault, quarantine or settings, weakening protection without administrator approval, impersonating
   the protection service, reaching another account's data, or getting the service (LocalSystem) to act on its behalf
+* Plugins: getting code loaded into Sentinel Vision without the user's (and, with the service, an administrator's)
+  approval, loading a plugin from a folder ordinary users can change, or changing or deleting protected plugin-log
+  records without administrator rights
 * Ransomware-shield bypasses due to bugs (decoys not tripping, vault content altered without detection)
 * Making the Web Shield block legitimate core services, or injecting entries into the hosts file
 * Behavior monitoring terminating processes it should not (e.g. crafted command lines that kill system processes)

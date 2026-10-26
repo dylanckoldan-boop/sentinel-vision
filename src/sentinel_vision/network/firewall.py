@@ -26,7 +26,17 @@ def _validate(ip: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
         raise FirewallError(f"not an IP address: {ip!r}") from exc
     if addr.is_loopback or addr.is_unspecified or addr.is_private:
         raise FirewallError("refusing to block a loopback, unspecified or private address")
+    if not addr.is_global or addr.is_multicast:
+        raise FirewallError("only public internet addresses can be blocked")
     return addr
+
+
+def command_line(cmd: list[str]) -> str | list[str]:
+    """netsh parses its own command line and expects name="Rule name", not a fully quoted "name=Rule name".
+    Every other part of a netsh command here is a fixed word or a validated address, so nothing can be injected."""
+    if cmd and cmd[0] == "netsh":
+        return " ".join(f'name="{a[5:]}"' if a.startswith("name=") else a for a in cmd)
+    return cmd
 
 
 def block_commands(ip: str) -> list[list[str]]:
@@ -97,7 +107,7 @@ def block_ip(ip: str) -> str:
             + "\n".join(subprocess.list2cmdline(c) for c in cmds)
         )
     for cmd in cmds:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        proc = subprocess.run(command_line(cmd), capture_output=True, text=True, timeout=30)
         if proc.returncode != 0 and "exists" not in (proc.stderr or "").lower():
             raise FirewallError(proc.stderr.strip() or f"{cmd[0]} failed with exit code {proc.returncode}")
     return f"Blocked {ip} in the system firewall."

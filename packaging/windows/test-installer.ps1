@@ -213,11 +213,49 @@ foreach ($u in 'https://api.github.com/', 'https://www.spamhaus.org/drop/drop.tx
     Assert $ok "still reachable with firewall blocking on: $u"
 }
 
+# ------------------------------------------------------------------------------------------------ companion programs
+Progress "tools for companion programs (Agent Guard): quarantine add, plugin log, net block, plugins"
+$tool = Join-Path $docs 'agent-tool.exe'
+Set-Content -Path $tool -Value 'MZ harmless test file for quarantine add' -NoNewline
+$qid = ((SvCli @('quarantine', 'add', $tool, '--reason', 'installer test')) -split "`r?`n" | Where-Object { $_ -match '^[0-9a-f]{32}$' } | Select-Object -Last 1)
+Assert ($qid -and -not (Test-Path $tool)) "quarantine add moved the file into protected storage ($qid)"
+Assert ((SvCli @('quarantine', 'list')) -match $qid) "the added item is listed"
+SvCli @('quarantine', 'restore', $qid) | Out-Null
+Assert ((Get-Content $tool -Raw) -eq 'MZ harmless test file for quarantine add') "the added item restores intact"
+Remove-Item $tool -Force
+
+SvCli @('plugin-log', 'append', 'agent-guard', '--json', '{"event":"installer-test","n":1}') | Out-Null
+SvCli @('plugin-log', 'append', 'agent-guard', '--json', '{"event":"installer-test","n":2}') | Out-Null
+$v = SvCli @('plugin-log', 'verify', 'agent-guard')
+Assert ($v -match '"intact": true' -and $v -match '"entries": 2' -and $v -match '"protected": true') "plugin log kept by the protection service, chain intact ($v)"
+$sid = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+Assert (Test-Path (Join-Path $data "users\$sid\plugins\agent-guard\log.jsonl")) "plugin log stored in the protected folder"
+
+$ip = '45.12.10.9'
+SvCli @('net', 'block', $ip) | Out-Null
+$blk = @(Get-NetFirewallRule -DisplayName "SentinelVision block $ip" -ErrorAction SilentlyContinue)
+Assert ($blk.Count -eq 2 -and ($blk | Where-Object { $_.Action -ne 'Block' }).Count -eq 0) "net block created inbound and outbound block rules"
+$blk | Remove-NetFirewallRule
+Assert ((SvCli @('net', 'block', '192.168.1.1')) -match 'refusing') "net block refuses private addresses"
+
+$pdir = Join-Path $newApp 'plugins\demo'
+New-Item -ItemType Directory -Force (Join-Path $pdir 'sv_demo-1.0.dist-info') | Out-Null
+Set-Content -Path (Join-Path $pdir 'sv_demo.py') -Value 'def register(): return []'
+Set-Content -Path (Join-Path $pdir 'sv_demo-1.0.dist-info\METADATA') -Value "Metadata-Version: 2.1`nName: sv_demo`nVersion: 1.0"
+Set-Content -Path (Join-Path $pdir 'sv_demo-1.0.dist-info\entry_points.txt') -Value "[sentinel_vision.plugins]`nsv_demo = sv_demo:register"
+$pl = SvCli @('plugins')
+Assert ($pl -match 'sv_demo 1\.0\s+\[waiting for approval\]') "a plugin in the protected Program Files folder is found and waits for approval ($pl)"
+icacls $pdir /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Null   # let ordinary users change it
+$pl = SvCli @('plugins')
+Assert ($pl -match 'refused: .*can be changed by S-1-5-32-545') "a plugin folder ordinary users could change is refused ($pl)"
+icacls $pdir /remove:g '*S-1-5-32-545' | Out-Null
+
 # ------------------------------------------------------------------------------------------------ 4. upgrades
 Progress "upgrade over the running app and service"
 Invoke-Setup $Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/LOG="install2.log"') "upgrade over itself"
 Assert ((Service-State).State -eq 'Running') "service running again after the upgrade"
 Assert ((SvCli @('service')) -match 'quarantine:\s+[1-9]') "protected data survived the upgrade"
+Assert (Test-Path (Join-Path $pdir 'sv_demo.py')) "plugins added by an administrator survive an upgrade"
 
 Progress "self-update style install relaunches the app"
 Invoke-Setup $Setup @('/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/RELAUNCH=1', '/LOG="install3.log"') "self-update style install"
@@ -236,6 +274,7 @@ Invoke-Setup "$newApp\unins000.exe" @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORE
 $deadline = (Get-Date).AddSeconds(90)
 while ((Test-Path "$newApp\SentinelVision.exe") -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
 Assert (-not (Test-Path "$newApp\SentinelVision.exe")) "program files removed"
+Assert (-not (Test-Path (Join-Path $newApp 'plugins'))) "plugins folder removed"
 Assert ($null -eq (Service-State)) "protection service removed"
 Assert ($null -eq (Get-Process SentinelVision, sentinel-vision-service -ErrorAction SilentlyContinue)) "nothing left running"
 $left = @(Get-NetFirewallRule -DisplayName 'Sentinel Vision - malicious networks *' -ErrorAction SilentlyContinue)

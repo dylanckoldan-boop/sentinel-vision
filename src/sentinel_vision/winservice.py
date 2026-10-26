@@ -199,10 +199,9 @@ class WindowsApplier(servicecore.SystemApplier):
 
 
 def _command_line(cmd: list[str]) -> str | list[str]:
-    """netsh parses its own command line and expects name="Rule name" (not a fully quoted "name=Rule name")."""
-    if cmd and cmd[0] == "netsh":
-        return " ".join(f'name="{a[5:]}"' if a.startswith("name=") else a for a in cmd)
-    return cmd
+    from sentinel_vision.network.firewall import command_line
+
+    return command_line(cmd)
 
 
 def _run(cmd: list[str]) -> int:

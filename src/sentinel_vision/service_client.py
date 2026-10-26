@@ -291,6 +291,13 @@ class RemoteQuarantine:
             raise QuarantineError(f"could not remove original file: {exc}") from exc
         return item
 
+    def add_external(self, path: str | Path, reason: str = "", source: str = "agent-guard") -> str:
+        """Quarantine a file another program found, into the protected store. Returns the id."""
+        from sentinel_vision.quarantine import external_labels, external_target
+
+        threat, engine = external_labels(reason, source)
+        return self.add(external_target(path), threat, engine).id
+
     def list(self) -> list[QuarantineItem]:
         return [QuarantineItem(**d) for d in self.t.call("quarantine.list")[0]["items"]]
 

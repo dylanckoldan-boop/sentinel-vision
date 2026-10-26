@@ -1,7 +1,7 @@
 """Signature & threat-intel updater.
 
 Security properties:
-* HTTPS only, certificate verification always on (system / certifi trust store).
+* HTTPS only, certificate verification always on (bundled certifi trust store only; see _ssl_context).
 * Hard size limits on every download; archives are inspected member-by-member and only
   plain ``.yar``/``.yara`` files are extracted, flattened to a safe basename (no path traversal).
 * New rules replace old ones atomically and are compile-checked before use; a broken update
@@ -46,13 +46,16 @@ class FeedResult:
 
 
 def _ssl_context() -> ssl.SSLContext:
-    ctx = ssl.create_default_context()
-    try:
-        import certifi  # type: ignore
+    """TLS for every download: certificate checks always on, and only the certificate authorities in the bundled,
+    regularly updated certifi list are trusted.
 
-        ctx.load_verify_locations(certifi.where())
-    except Exception:
-        pass
+    The operating system's store is deliberately not used. Python reads the trusted certificates from the Windows
+    store but never Windows' list of *blocked* ones, so an authority Microsoft has distrusted (as with the eMudhra
+    key compromise in October 2026) would still be trusted by a Python program that reads the system store.
+    Fails closed: without certifi no download is made."""
+    import certifi  # a declared dependency, bundled with the app
+
+    ctx = ssl.create_default_context(cafile=certifi.where())  # with cafile, the system store is not loaded
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     return ctx
 

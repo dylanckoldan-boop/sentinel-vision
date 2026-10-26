@@ -48,7 +48,7 @@ BOOL_ON = (
     "schedule_memory_scan", "keep_running",
 )  # fmt: skip
 LIST_KEEP = ("ransomware_folders", "watch_paths", "enabled_feeds")  # removing an entry weakens
-LIST_GROW = ("exclusions",)  # adding an entry weakens
+LIST_GROW = ("exclusions", "approved_plugins")  # adding an entry weakens
 NUM_LOWER_IS_STRONGER = ("heuristic_threshold",)
 NUM_HIGHER_IS_STRONGER = ("max_file_size_mb", "vault_max_mb", "vault_keep_versions")
 GLOBAL_BOOL_ON = ("webshield_block_hosts", "firewall_block")  # machine-wide
@@ -64,6 +64,7 @@ LABELS = {
     "auto_quarantine": "automatic quarantine",
     "keep_running": "starting at sign-in and restarting if closed",
     "exclusions": "exclusions",
+    "approved_plugins": "allowed plugins",
     "ransomware_folders": "ransomware-protected folders",
     "watch_paths": "real-time protected folders",
     "enabled_feeds": "threat-definition sources",
@@ -141,6 +142,7 @@ class Event:
     sid: str
     kind: str  # refused | changed | watchdog | system
     detail: str
+    seq: int = 0  # increases by one per event; clients ask for events after the last seq they saw
 
 
 @dataclass
@@ -188,8 +190,10 @@ class ServiceCore:
         self._lock = threading.RLock()
         self._vaults: dict[str, RollbackVault] = {}
         self._quarantines: dict[str, Quarantine] = {}
+        self._plugin_logs: dict = {}
         self._transfers: dict[str, _Transfer] = {}
         self.events: list[Event] = []
+        self._event_seq = 0
         self.heartbeats: dict[tuple[str, int], tuple[float, int]] = {}  # (sid, session) -> (time, pid)
         self.paused: set[tuple[str, int]] = set()  # (sid, session): the user chose to stop protection
         self.started = time.time()
@@ -255,11 +259,13 @@ class ServiceCore:
 
     def _event(self, sid: str, kind: str, detail: str) -> None:
         with self._lock:
-            self.events.append(Event(time.time(), sid, kind, detail))
+            self._event_seq += 1
+            ev = Event(time.time(), sid, kind, detail, self._event_seq)
+            self.events.append(ev)
             del self.events[:-500]
         try:
             with open(self.root / "events.log", "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(asdict(self.events[-1])) + "\n")
+                fh.write(json.dumps(asdict(ev)) + "\n")
         except OSError:
             pass
 
@@ -287,10 +293,16 @@ class ServiceCore:
         }
 
     def op_events(self, c: Caller, a: dict, p: bytes) -> dict:
-        since = float(a.get("since", 0))
+        """Events for the caller. ``after``: those after a sequence number (exact; the reply's ``last`` is the next
+        cursor). ``since``: those after a time (older clients; can miss events in the same clock tick)."""
         with self._lock:
-            mine = [asdict(e) for e in self.events if e.ts > since and (e.sid == c.sid or e.sid == "*")]
-        return {"events": mine}
+            if "after" in a:
+                after = int(a["after"])
+                mine = [asdict(e) for e in self.events if e.seq > after and (e.sid == c.sid or e.sid == "*")]
+            else:
+                since = float(a.get("since", 0))
+                mine = [asdict(e) for e in self.events if e.ts > since and (e.sid == c.sid or e.sid == "*")]
+            return {"events": mine, "last": self._event_seq}
 
     def op_heartbeat(self, c: Caller, a: dict, p: bytes) -> dict:
         with self._lock:
@@ -379,6 +391,46 @@ class ServiceCore:
         if g.get("firewall_block"):
             out["firewall"] = self.applier.apply_firewall()
         return out
+
+    # ------------------------------------------------------------------ plugin logs (append-only)
+    def _plugin_log(self, sid: str, name: str):
+        from sentinel_vision.pluginlog import AppendOnlyLog, PluginLogError, check_name
+
+        try:
+            check_name(name)
+        except PluginLogError as exc:
+            raise ServiceError("bad_request", str(exc)) from exc
+        key = (sid, name)
+        with self._lock:
+            log_ = self._plugin_logs.get(key)
+            if log_ is None:
+                log_ = self._plugin_logs[key] = AppendOnlyLog(self._user_dir(sid) / "plugins" / name / "log.jsonl")
+            return log_
+
+    def op_plugin_append(self, c: Caller, a: dict, p: bytes) -> dict:
+        """Add a record to the caller's own log for a plugin. Records can be added, never changed or removed."""
+        from sentinel_vision.pluginlog import PluginLogError
+
+        try:
+            return self._plugin_log(c.sid, str(a.get("name", ""))).append(
+                a.get("record"), pid=c.pid, elevated=c.elevated
+            )
+        except PluginLogError as exc:
+            raise ServiceError("bad_request", str(exc)) from exc
+
+    def op_plugin_read(self, c: Caller, a: dict, p: bytes) -> dict:
+        from sentinel_vision.pluginlog import PluginLogError
+
+        sid = str(a.get("sid", c.sid))
+        if sid != c.sid and not c.elevated:
+            raise ServiceError("denied", "another account's records")
+        try:
+            log_ = self._plugin_log(sid, str(a.get("name", "")))
+            entries = log_.read(int(a.get("since", 0)), int(a.get("limit", 1000)))
+            ok, count = log_.verify() if a.get("verify") else (None, None)
+        except PluginLogError as exc:
+            raise ServiceError("bad_request", str(exc)) from exc
+        return {"entries": entries, "intact": ok, "count": count}
 
     # ------------------------------------------------------------------ rollback vault
     @staticmethod

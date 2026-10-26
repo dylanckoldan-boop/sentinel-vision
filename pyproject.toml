@@ -30,7 +30,7 @@ dependencies = [
     "pefile>=2023.2.7",
     "cryptography>=50",
     "platformdirs>=4.0",
-    "certifi>=2024.2.2",
+    "certifi>=2026.10.23",  # removes emSign roots after the eMudhra key compromise (October 2026)
     "pywin32>=308; sys_platform == 'win32'",
 ]
 

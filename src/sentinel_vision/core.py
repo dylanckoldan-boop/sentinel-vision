@@ -59,6 +59,8 @@ class Sentinel:
         # other programs. Elsewhere (or if it isn't installed) they live in the user's own data folder.
         self.service = service if service is not None else (service_client.connect() if use_service else None)
         self.migrated: tuple[int, int] = (0, 0)
+        self._events_since = time.time()
+        self._events_after: int | None = None  # sequence number of the last service event seen
         if self.service is not None:
             self._attach_service()
             self.quarantine = service_client.RemoteQuarantine(self.service)
@@ -87,7 +89,6 @@ class Sentinel:
         self._engine_key = self._current_engine_key()
         self._watch_key: tuple | None = None
         self._rw_key: tuple | None = None
-        self._events_since = time.time()
 
     # ------------------------------------------------------------------ protection service
     def _global_from_settings(self) -> dict:
@@ -99,6 +100,11 @@ class Sentinel:
     def _attach_service(self) -> None:
         log = logging.getLogger(__name__)
         t = self.service
+        try:
+            # start the event cursor before anything this start-up does, so no refusal or change is missed
+            self._events_after = t.call("events", {"after": 1 << 62})[0].get("last")
+        except Exception:
+            self._events_after = None  # an older service: fall back to times
         try:
             self.migrated = service_client.migrate_local_data(t, sub_dir("vault"), sub_dir("quarantine"))
             if any(self.migrated):
@@ -158,6 +164,11 @@ class Sentinel:
         if self.service is None:
             return []
         self.service.call("heartbeat")
+        if self._events_after is not None:
+            r = self.service.call("events", {"after": self._events_after})[0]
+            events = r["events"]
+            self._events_after = max([self._events_after, *(int(e.get("seq", 0)) for e in events)])
+            return events
         events = self.service.call("events", {"since": self._events_since})[0]["events"]
         if events:
             self._events_since = max(e["ts"] for e in events)
