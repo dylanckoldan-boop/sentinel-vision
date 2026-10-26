@@ -26,6 +26,11 @@ All notable changes to Sentinel Vision are listed here. The format follows
   - `net block IP` and `plugins` (lists plugins and why any was refused).
   - `sentinel_vision.plugin_api` for plugin authors.
 
+### Fixed
+- Alerts from the protection service (a refused change, system-wide blocking turned on) could be missed when two
+  happened within one tick of the Windows clock (about 15 ms), for example right after the app started. Events now
+  carry sequence numbers.
+
 ## [0.4.0] - 2026-10-22
 
 This release combines the planned 0.3.2 (fewer false alarms, pinned build tools) with 0.4.0 (tamper protection).

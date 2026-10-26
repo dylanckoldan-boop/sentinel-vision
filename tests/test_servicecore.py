@@ -356,3 +356,29 @@ def test_firewall_rules_stay_within_netsh_argument_limits():
     assert rules == len(batches) and len(cmds) == 2 * rules
     line = winservice._command_line(cmds[0])
     assert 'name="Sentinel Vision - malicious networks out 1"' in line and len(line) < 3300
+
+
+def test_events_in_the_same_clock_tick_are_never_missed(core, isolated_home, monkeypatch):
+    """Windows' clock often advances in ~15 ms steps; events used to be fetched by time and could be skipped."""
+    from sentinel_vision import servicecore
+    from sentinel_vision.core import ProtectionChangeNeedsAdmin, Sentinel
+    from sentinel_vision.service_client import LocalTransport
+
+    monkeypatch.setattr(servicecore.time, "time", lambda: 1_800_000_000.0)
+    monkeypatch.setattr("sentinel_vision.core.time.time", lambda: 1_800_000_000.0)
+    s = Settings()
+    s.realtime_enabled = s.network_enabled = False
+    s.feeds = []
+    sv = Sentinel(s, service=LocalTransport(core, ALICE))
+    sv.settings.ransomware_enabled = False
+    with pytest.raises(ProtectionChangeNeedsAdmin):
+        sv.save_settings()
+    first = sv.service_tick()
+    # the start-up "firewall blocking on" event and the refusal both arrive, although they share one instant
+    assert [e["kind"] for e in first] == ["system", "refused"]
+    with pytest.raises(ServiceError):  # refused again, in the same instant
+        core.handle(ALICE, "policy.set", {"policy": {"exclusions": ["C:\\\\x"]}})
+    second = sv.service_tick()
+    assert [e["kind"] for e in second] == ["refused"] and second[0]["seq"] > first[-1]["seq"]
+    assert sv.service_tick() == []  # nothing twice
+    sv.shutdown()
