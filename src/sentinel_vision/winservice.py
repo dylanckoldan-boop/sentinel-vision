@@ -369,6 +369,8 @@ class Watchdog:
         self.restarts: dict[tuple[str, int], list[float]] = {}
         self.cooldown: dict[tuple[str, int], float] = {}
         self.seen_session: set[tuple[str, int]] = set()
+        self._skipped: set[int] = set()
+        self._last_state: dict[tuple[str, int], str] = {}
 
     def run(self) -> None:
         while not self.stop.wait(WATCH_INTERVAL):
@@ -392,7 +394,9 @@ class Watchdog:
                 )
                 out.append((s["SessionId"], sid))
             except Exception as exc:  # a session without a usable user token (e.g. still signing in)
-                log.debug("session %s skipped: %s", s.get("SessionId"), exc)
+                if s["SessionId"] not in self._skipped:
+                    self._skipped.add(s["SessionId"])
+                    log.info("watchdog: session %s has no usable user token: %s", s.get("SessionId"), exc)
         return out
 
     def _app_pids(self, session: int) -> list[int]:
@@ -404,22 +408,37 @@ class Watchdog:
         for p in psutil.process_iter(["pid", "exe"]):
             try:
                 if p.info["exe"] and os.path.normcase(p.info["exe"]) == target:
-                    if win32ts.ProcessIdToSessionId(p.info["pid"]) == session:
+                    if win32ts.ProcessIdToSessionId(p.info["pid"]) == session and _alive(p.info["pid"]):
                         pids.append(p.info["pid"])
             except Exception as exc:  # process ended while we looked
                 log.debug("process check skipped: %s", exc)
         return pids
+
+    def _state(self, key: tuple[str, int], state: str) -> None:
+        """Log what the watchdog decided for a session whenever that changes (for diagnosing it)."""
+        if self._last_state.get(key) != state:
+            self._last_state[key] = state
+            log.info("watchdog: session %s: %s", key[1], state)
 
     def tick(self) -> None:
         now = time.time()
         for session, sid in self._sessions():
             key = (sid, session)
             pol = self.core.policy(sid)
-            if not pol or not pol.get("keep_running", True) or key in self.core.paused:
-                continue  # app never used by this account, or the user turned this off / stopped protection
+            if not pol:
+                self._state(key, "account has not used Sentinel Vision")
+                continue
+            if not pol.get("keep_running", True):
+                self._state(key, "start-at-sign-in is off")
+                continue
+            if key in self.core.paused:
+                self._state(key, "protection stopped by the user until sign-out")
+                continue
             if self.cooldown.get(key, 0) > now:
+                self._state(key, "restarts paused")
                 continue
             pids = self._app_pids(session)
+            self._state(key, f"app running (process {', '.join(map(str, pids))})" if pids else "app not running")
             first = key not in self.seen_session
             self.seen_session.add(key)
             if pids:
@@ -433,6 +452,7 @@ class Watchdog:
                     self._launch(session, key, now)
                 continue
             if first:
+                log.info("watchdog: session %s signed in without the app running; starting it", session)
                 self._launch(session, key, now)  # start at sign-in
                 continue
             # it was running in this session and is gone without the user stopping protection
@@ -449,6 +469,7 @@ class Watchdog:
                 )
                 continue
             self.core._event(sid, "watchdog", "Sentinel Vision was closed without your approval and was restarted")
+            log.info("watchdog: the app was closed in session %s; restarting it", session)
             self._launch(session, key, now)
 
     def _launch(self, session: int, key: tuple[str, int], now: float) -> None:
@@ -458,12 +479,13 @@ class Watchdog:
         import win32ts
 
         if not self.app.exists():
+            log.warning("watchdog: %s is missing", self.app)
             return
         tok = win32ts.WTSQueryUserToken(session)
         env = win32profile.CreateEnvironmentBlock(tok, False)
         si = win32process.STARTUPINFO()
         si.lpDesktop = "winsta0\\default"
-        win32process.CreateProcessAsUser(
+        info = win32process.CreateProcessAsUser(
             tok,
             str(self.app),
             f'"{self.app}" --minimized',
@@ -476,6 +498,7 @@ class Watchdog:
             si,
         )
         self.restarts.setdefault(key, []).append(now)
+        log.info("watchdog: started the app in session %s (process %s)", session, info[2])
 
     @staticmethod
     def _message(session: int, text: str) -> None:
@@ -485,6 +508,22 @@ class Watchdog:
             win32ts.WTSSendMessage(win32ts.WTS_CURRENT_SERVER_HANDLE, session, DISPLAY_NAME, text, 0x40, 60, False)
         except Exception as exc:
             log.info("could not show a message: %s", exc)
+
+
+def _alive(pid: int) -> bool:
+    """True while the process is still running. A process that has exited stays in the process list for as long
+    as any program holds a handle to it (for example the tool that ended it), so being listed isn't enough."""
+    try:
+        import win32api
+        import win32process
+
+        h = win32api.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        try:
+            return win32process.GetExitCodeProcess(h) == 259  # STILL_ACTIVE
+        finally:
+            win32api.CloseHandle(h)
+    except Exception:
+        return False  # gone, or not ours to open
 
 
 def _kill(pid: int) -> None:

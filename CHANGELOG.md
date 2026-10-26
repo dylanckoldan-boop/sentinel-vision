@@ -30,6 +30,8 @@ All notable changes to Sentinel Vision are listed here. The format follows
 - Alerts from the protection service (a refused change, system-wide blocking turned on) could be missed when two
   happened within one tick of the Windows clock (about 15 ms), for example right after the app started. Events now
   carry sequence numbers.
+- The watchdog could fail to restart the app after it was ended, because a process that has exited stays listed by
+  Windows while another program holds a handle to it. It now checks that the app is really still running.
 
 ## [0.4.0] - 2026-10-22
 
