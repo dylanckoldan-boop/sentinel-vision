@@ -314,7 +314,8 @@ jobs:
           cd artifacts
           ls -la
           test -f "SentinelVision-$VERSION-Setup.exe"
-          sha256sum SentinelVision-* > SHA256SUMS.txt
+          test -f THIRD_PARTY_NOTICES.txt
+          sha256sum SentinelVision-* THIRD_PARTY_NOTICES.txt > SHA256SUMS.txt
           cat SHA256SUMS.txt
           cd ..
           awk -v v="$VERSION" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > notes.md
@@ -357,4 +358,5 @@ jobs:
           body_path: notes.md
           files: |
             artifacts/SentinelVision-*
+            artifacts/THIRD_PARTY_NOTICES.txt
             artifacts/SHA256SUMS.txt*
