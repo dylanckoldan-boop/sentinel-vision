@@ -576,8 +576,11 @@ def cmd_service(sv: Sentinel, args) -> int:
         print("The protection service is not running (it is part of the Windows installer).")
         return 1
     if getattr(args, "self_test", False):
+        from sentinel_vision import webshield
         from sentinel_vision.servicecore import ServiceError, policy_from_settings
 
+        problem = webshield.elevation_problem(webshield._cli_base()[0])
+        print("Administrator prompts: OK" if not problem else f"Administrator prompts: refused ({problem})")
         if sv.service.call("ping")[0].get("elevated"):
             print("Running with administrator rights: changes are allowed, so the refusal can't be tested here.")
             print("Run this again from a normal (not elevated) window.")

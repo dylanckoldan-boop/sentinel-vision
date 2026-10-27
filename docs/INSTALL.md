@@ -56,7 +56,8 @@ works on your computer.
 3. On first start it asks whether to start automatically at sign-in.
 
 The portable build does not update itself; download new versions from the Releases page. It has no protection service,
-so its data and settings stay in your own folder (like on macOS and Linux).
+so its data and settings stay in your own folder (like on macOS and Linux), and it can't turn on system-wide website
+blocking (it never runs a program from a folder you can change with administrator rights).
 
 ## macOS
 
@@ -75,17 +76,30 @@ Requires macOS 14 (Sonoma) or newer on an Apple Silicon Mac (M1 or later). Intel
 To see the connections of *every* process in Live traffic, macOS requires administrator rights; without them the
 monitor shows your own processes.
 
+**For system-wide website blocking**, the app must be owned by the system, because Sentinel Vision only ever runs
+code with administrator rights that no ordinary program could have changed. A dragged-in app belongs to you, so run
+this once in Terminal after step 2:
+
+```bash
+sudo chown -R root:wheel /Applications/SentinelVision.app && sudo chmod -R go-w /Applications/SentinelVision.app
+```
+
 ## Linux
 
 Requires a 64-bit x86 distribution with glibc 2.35+ (Ubuntu 22.04+, Debian 12+, Fedora 36+ or similar) and a desktop.
 
+Install system-wide (recommended: needed for system-wide website blocking, because Sentinel Vision only runs code
+with administrator rights that no ordinary program could have changed):
+
 ```bash
-tar -xzf SentinelVision-<version>-linux-x86_64.tar.gz -C ~/.local/opt   # any folder works
-~/.local/opt/SentinelVision/SentinelVision
+sudo tar -xzf SentinelVision-<version>-linux-x86_64.tar.gz -C /opt
+/opt/SentinelVision/SentinelVision
 ```
 
+Or just for yourself, without website blocking: `tar -xzf … -C ~/.local/opt`.
+
 Accept the first-run prompt to start automatically at sign-in (it adds `~/.config/autostart/sentinel-vision.desktop`).
-The command-line tool is `~/.local/opt/SentinelVision/sentinel-vision-cli`.
+The command-line tool is `/opt/SentinelVision/sentinel-vision-cli`.
 
 ## Any OS — from source with Python
 

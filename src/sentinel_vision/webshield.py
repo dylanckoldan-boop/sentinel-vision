@@ -469,9 +469,44 @@ def _cli_base() -> list[str]:
     return [sys.executable, "-m", "sentinel_vision"]
 
 
+def elevation_problem(exe: str) -> str:
+    """'' when ``exe`` may be run with administrator rights: only an administrator can change it or any folder above
+    it. Otherwise why not. Running user-changeable code as root after an expected prompt would let any program
+    running as the user become root (audit finding SV-A08)."""
+    if not getattr(sys, "frozen", False):
+        return "running from source (python -m sentinel_vision) is never run as administrator"
+    path = Path(os.path.realpath(exe))
+    if sys.platform == "win32":
+        from sentinel_vision.plugins import admin_only_problem
+
+        for p in (path, path.parent):
+            problem = admin_only_problem(p)
+            if problem:
+                return problem
+        return ""
+    for p in [path, *path.parents]:
+        try:
+            st = os.stat(p)
+        except OSError as exc:
+            return f"cannot check {p}: {exc}"
+        if st.st_uid != 0:
+            return f"{p} is not owned by root"
+        if st.st_mode & 0o022:
+            return f"{p} can be changed by other users"
+    return ""
+
+
 def elevated_command(args: list[str]) -> list[str] | None:
-    """Command line that re-runs the CLI with ``args`` as administrator (None on Windows: use ShellExecute)."""
+    """Command line that re-runs the CLI with ``args`` as administrator (None on Windows: use ShellExecute).
+    Raises OSError, with the commands to run instead, when the program could be changed by non-administrators."""
     base = _cli_base()
+    problem = elevation_problem(base[0])
+    if problem:
+        raise OSError(
+            f"not asking for administrator rights: {problem}. Install Sentinel Vision system-wide (see "
+            "docs/INSTALL.md), or run this yourself in a terminal:\n  sudo "
+            + " ".join(_sh_quote(a) for a in [*base, *args])
+        )
     if sys.platform == "darwin":
         script = " ".join(_sh_quote(a) for a in [*base, *args])
         return ["osascript", "-e", f'do shell script "{script}" with administrator privileges']
@@ -491,6 +526,9 @@ def run_elevated(args: list[str]) -> int:
         from ctypes import wintypes
 
         base = _cli_base()
+        problem = elevation_problem(base[0])
+        if problem:
+            raise OSError(f"not asking for administrator rights: {problem}")
         exe, params = base[0], subprocess.list2cmdline([*base[1:], *args])
 
         class SHELLEXECUTEINFOW(ctypes.Structure):
