@@ -150,6 +150,7 @@ def footer(prefix: str = "") -> str:
         <li><a href="{prefix}terms.html">Terms</a></li>
         <li><a href="{prefix}cookies.html">Cookies</a></li>
         <li><a href="{prefix}accessibility.html">Accessibility</a></li>
+        <li><a href="{prefix}about.html">How it was built</a></li>
         <li><a href="{prefix}licences.html">Licences</a></li>
         <li><a href="{REPO}/blob/main/CHANGELOG.md">Changelog</a></li>
       </ul>
@@ -279,8 +280,8 @@ def ledger_table() -> str:
   </tbody>
 </table>
 <p class="ledger-note">Like any internet request, each of these shows the receiving server your IP address and the
-app's name and version. The code that makes every request is <a href="{REPO}/tree/main/src/sentinel_vision">on GitHub</a>
-for anyone to check.</p>"""
+app's name and version. No AI services are contacted. The code that makes every request is
+<a href="{REPO}/tree/main/src/sentinel_vision">on GitHub</a> for anyone to check.</p>"""
 
 
 # --------------------------------------------------------------------------- pages
@@ -300,7 +301,11 @@ def index(sizes) -> str:
         ("Scheduled scans", "A daily quick scan and a weekly full scan, caught up if your computer was off."),
         ("Camera and microphone alerts", "Know when an app starts using them (Windows and Linux)."),
         ("Password breach check", "Find out whether a password appears in known breaches, without sending it."),
-        ("File shredder", "Overwrites files before deleting them."),
+        (
+            "File shredder",
+            "Overwrites files before deleting them. SSDs and cloud-synced folders can keep older copies, so use disk "
+            "encryption for full protection.",
+        ),
         (
             "Router and DNS checks",
             "Warns if a device on your network impersonates your router or your DNS "
@@ -309,8 +314,9 @@ def index(sizes) -> str:
         (
             "Tamper protection (Windows)",
             "A protected service keeps the quarantine, the rollback vault and your protection settings out of reach "
-            "of other programs. Turning protection off needs administrator approval, and the app is restarted if "
-            "something closes it.",
+            "of programs running with your rights. Turning protection off or restoring a quarantined file needs "
+            "administrator approval, and the app is restarted if something closes it. If the service is stopped, "
+            "the app warns you and keeps your settings at full strength until it's back.",
         ),
         (
             "Firewall blocking (Windows)",
@@ -347,8 +353,9 @@ def index(sizes) -> str:
         ),
         (
             "Stop malware that already has administrator rights",
-            "A program running as administrator can stop any program without a kernel driver. Approve administrator "
-            "prompts only for programs you started yourself.",
+            "A program running as administrator can stop any program, including the protection service, without a "
+            "kernel driver. Sentinel Vision warns you if that happens. Approve administrator prompts only for "
+            "programs you started yourself.",
         ),
         ("VPN, identity-theft insurance or credit monitoring", "These are paid services rather than software."),
     ]
@@ -447,6 +454,7 @@ def index(sizes) -> str:
 
     <h3>Also included</h3>
     <dl class="also">{also_html}</dl>
+    <p class="section-intro">Sentinel Vision contains no machine-learning model and sends nothing to AI services. Detections come from hash lists, YARA rules, ClamAV signatures and fixed heuristics. <a href="about.html">How Sentinel Vision was built</a>.</p>
   </div>
 </section>
 
@@ -553,7 +561,8 @@ def privacy() -> str:
     <p>Links to GitHub and other sites take you to services with their own privacy policies.</p>
 
     <h2>The Sentinel Vision app</h2>
-    <p>The app has no account and sends nothing to us. We have no server that could receive anything.</p>
+    <p>The app has no account and sends nothing to us. We have no server that could receive anything.
+    Sentinel Vision contains no machine-learning model and sends nothing to AI services. Detections come from hash lists, YARA rules, ClamAV signatures and fixed heuristics.</p>
     <h3>What it sends over the internet</h3>
     {ledger_table()}
 
@@ -737,6 +746,35 @@ def accessibility() -> str:
 """
 
 
+def about() -> str:
+    return f"""
+<article class="prose">
+  <div class="wrap">
+    <h1>How Sentinel Vision was built</h1>
+    <p>Sentinel Vision is designed and maintained by {MAINTAINER}. Most of its code and documentation was written
+    with AI assistance (Anthropic's Claude), under his direction: he decides what it should do and what is
+    released.</p>
+    <h2>How changes are checked</h2>
+    <ul>
+      <li>Every change must pass the automated tests on Windows, macOS and Linux before it is released.</li>
+      <li>Each Windows release is installed, upgraded from the previous release and uninstalled on a clean Windows
+      machine, with checks that an ordinary account can't weaken its protection.</li>
+      <li>Every week, a false-positive audit scans clean Windows, macOS and Linux computers, and a test checks that
+      every threat list the app downloads still works.</li>
+      <li>The source code, the tests and every result are public on <a href="{REPO}">GitHub</a>.</li>
+    </ul>
+    <h2>Who is responsible</h2>
+    <p>{MAINTAINER} is responsible for the project and its releases. Using AI to write it doesn't change the
+    licence: like all MIT-licensed software, Sentinel Vision comes with no warranty (see the
+    <a href="terms.html">terms</a>).</p>
+    <h2>The program itself uses no AI</h2>
+    <p>Sentinel Vision contains no machine-learning model and sends nothing to AI services. Detections come from hash lists, YARA rules, ClamAV signatures and fixed heuristics.</p>
+    <p class="release-note">Anthropic and Claude are trademarks of Anthropic. This project is not affiliated with or
+    endorsed by Anthropic.</p>
+  </div>
+</article>"""
+
+
 # Open-source software included in the app: (name in requirements/build.lock, shown name, licence, home page)
 COMPONENTS = [
     ("pyside6", "Qt for Python (PySide6) and Qt", "LGPL-3.0", "https://www.qt.io/qt-for-python"),
@@ -830,6 +868,12 @@ def build() -> None:
             "Accessibility",
             "How this website is made accessible, and how to report a problem.",
             accessibility(),
+            "",
+        ),
+        "about.html": (
+            "How Sentinel Vision was built",
+            "Who makes Sentinel Vision, how AI was used, and how every change is checked.",
+            about(),
             "",
         ),
         "licences.html": (
