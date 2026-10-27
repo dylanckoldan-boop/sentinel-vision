@@ -41,3 +41,29 @@ def test_every_host_in_the_app_is_in_the_ledger():
     ledger = _ledger()
     missing = sorted({name for h, name in HOST_PUBLISHER.items() if h in hosts and name not in ledger})
     assert missing == [], f"the website ledger does not name: {missing}"
+
+
+def test_licences_page_lists_every_runtime_dependency():
+    """Audit finding SV-E01: the website's Licences page names every package the app depends on."""
+    import tomllib
+
+    deps = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+    names = {re.split(r"[<>=;\[ ]", d, maxsplit=1)[0].lower() for d in deps}
+    text = (ROOT / "site" / "build.py").read_text(encoding="utf-8")
+    block = text[text.index("COMPONENTS = [") : text.index("def locked_version")]
+    listed = set(re.findall(r'^\s+\("([a-z0-9-]+)", "', block, re.M))
+    lock = (ROOT / "requirements" / "build.lock").read_text(encoding="utf-8")
+    assert names - listed == set(), f"add to COMPONENTS in site/build.py: {sorted(names - listed)}"
+    assert all(re.search(rf"^{n}==", lock, re.M) for n in listed), "every listed package is in build.lock"
+
+
+def test_vendored_licence_texts_are_the_official_ones():
+    import hashlib
+
+    lic = ROOT / "packaging" / "licenses"
+    official = {
+        "GPL-3.0.txt": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+        "LGPL-3.0.txt": "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118",
+    }
+    for name, digest in official.items():
+        assert hashlib.sha256((lic / name).read_bytes()).hexdigest() == digest, name

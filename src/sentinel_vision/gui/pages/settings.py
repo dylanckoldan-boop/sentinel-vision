@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -202,6 +203,16 @@ class SettingsPage(Page):
         check_row.addWidget(label(f"Installed version: {__version__}", "muted"))
         check_row.addStretch(1)
         uf.addRow(check_row)
+        notices = notices_path()
+        if notices is not None:
+            lic_row = QHBoxLayout()
+            b_lic = QPushButton("Third-party licences")
+            b_lic.setToolTip("Licences of the open-source software included in Sentinel Vision")
+            b_lic.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(notices))))
+            lic_row.addWidget(b_lic)
+            lic_row.addWidget(label("Sentinel Vision is free software under the MIT licence.", "muted"))
+            lic_row.addStretch(1)
+            uf.addRow(lic_row)
         lay.addWidget(ui)
         lay.addStretch(1)
 
@@ -344,3 +355,17 @@ class SettingsPage(Page):
         self.b_update.setEnabled(True)
         self.b_update.setText("Update now")
         QMessageBox.critical(self, "Update failed", err)
+
+
+def notices_path():
+    """THIRD_PARTY_NOTICES.txt shipped with an installed build (next to the program; in Resources on macOS)."""
+    import sys
+    from pathlib import Path
+
+    if not getattr(sys, "frozen", False):
+        return None
+    exe = Path(sys.executable).resolve()
+    for p in (exe.parent / "THIRD_PARTY_NOTICES.txt", exe.parent.parent / "Resources" / "THIRD_PARTY_NOTICES.txt"):
+        if p.is_file():
+            return p
+    return None

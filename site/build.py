@@ -150,7 +150,7 @@ def footer(prefix: str = "") -> str:
         <li><a href="{prefix}terms.html">Terms</a></li>
         <li><a href="{prefix}cookies.html">Cookies</a></li>
         <li><a href="{prefix}accessibility.html">Accessibility</a></li>
-        <li><a href="{REPO}/blob/main/LICENSE">Licence</a></li>
+        <li><a href="{prefix}licences.html">Licences</a></li>
         <li><a href="{REPO}/blob/main/CHANGELOG.md">Changelog</a></li>
       </ul>
     </nav>
@@ -737,6 +737,65 @@ def accessibility() -> str:
 """
 
 
+# Open-source software included in the app: (name in requirements/build.lock, shown name, licence, home page)
+COMPONENTS = [
+    ("pyside6", "Qt for Python (PySide6) and Qt", "LGPL-3.0", "https://www.qt.io/qt-for-python"),
+    ("shiboken6", "Shiboken6", "LGPL-3.0", "https://www.qt.io/qt-for-python"),
+    ("yara-python", "yara-python, with the YARA library", "Apache-2.0 and BSD-3-Clause", "https://virustotal.github.io/yara/"),
+    ("cryptography", "cryptography, with OpenSSL", "Apache-2.0 or BSD-3-Clause; OpenSSL: Apache-2.0", "https://cryptography.io"),
+    ("cffi", "cffi", "MIT-0", "https://cffi.readthedocs.io"),
+    ("pycparser", "pycparser", "BSD-3-Clause", "https://github.com/eliben/pycparser"),
+    ("psutil", "psutil", "BSD-3-Clause", "https://github.com/giampaolo/psutil"),
+    ("watchdog", "watchdog", "Apache-2.0", "https://github.com/gorakhargosh/watchdog"),
+    ("pefile", "pefile", "MIT", "https://github.com/erocarrera/pefile"),
+    ("platformdirs", "platformdirs", "MIT", "https://github.com/platformdirs/platformdirs"),
+    ("certifi", "certifi", "MPL-2.0", "https://github.com/certifi/python-certifi"),
+    ("pywin32", "pywin32 (Windows only)", "PSF-2.0", "https://github.com/mhammond/pywin32"),
+]  # fmt: skip
+
+
+def locked_version(name: str) -> str:
+    m = re.search(rf"^{re.escape(name)}==([^\s;]+)", (ROOT / "requirements" / "build.lock").read_text(), re.M)
+    return m.group(1) if m else ""
+
+
+def licences() -> str:
+    rows = "".join(
+        f'<tr><td><a href="{url}">{html.escape(shown)}</a></td><td>{locked_version(name)}</td>'
+        f"<td>{html.escape(lic)}</td></tr>"
+        for name, shown, lic, url in COMPONENTS
+    )
+    py = "3.12"
+    qt = locked_version("pyside6")
+    return f"""
+<article class="prose">
+  <div class="wrap">
+    <h1>Licences</h1>
+    <p>Sentinel Vision is free software under the <a href="{REPO}/blob/main/LICENSE">MIT licence</a>. Each download
+    also includes the open-source software below, under its own licence. The full licence texts come with the app
+    (Settings &rarr; <em>Third-party licences</em>) and with every release as
+    <a href="{REPO}/releases/latest/download/THIRD_PARTY_NOTICES.txt">THIRD_PARTY_NOTICES.txt</a>.</p>
+    <table>
+      <caption>Software included in the current release</caption>
+      <thead><tr><th scope="col">Software</th><th scope="col">Version</th><th scope="col">Licence</th></tr></thead>
+      <tbody>{rows}<tr><td><a href="https://www.python.org">Python</a></td><td>{py}</td><td>PSF-2.0</td></tr></tbody>
+    </table>
+    <h2>Qt and PySide6 (LGPL-3.0)</h2>
+    <p>Qt and Qt for Python are used under the GNU Lesser General Public License version 3. They are separate
+    libraries inside the app, so you may replace them with your own modified versions. Their source code for the
+    version in the current release ({qt}) is available from
+    <a href="https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-{qt}-src/">download.qt.io</a> and
+    <a href="https://code.qt.io/cgit/pyside/pyside-setup.git/tag/?h=v{qt}">code.qt.io</a>. Qt also includes
+    components under their own licences, listed in
+    <a href="https://doc.qt.io/qt-6/licenses-used-in-qt.html">Qt's documentation</a>.</p>
+    <h2>Threat data</h2>
+    <p>The threat lists the app downloads come from their publishers under their own terms, listed on the
+    <a href="index.html#credits">home page</a>. The Phishing Army and OpenPhish lists are for personal,
+    non-commercial use.</p>
+  </div>
+</article>"""
+
+
 def not_found() -> str:
     return """
 <article class="prose">
@@ -771,6 +830,12 @@ def build() -> None:
             "Accessibility",
             "How this website is made accessible, and how to report a problem.",
             accessibility(),
+            "",
+        ),
+        "licences.html": (
+            "Licences",
+            "The open-source software included in Sentinel Vision and its licences.",
+            licences(),
             "",
         ),
         "404.html": ("Page not found", "This page doesn't exist.", not_found(), ""),

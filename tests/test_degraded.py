@@ -117,3 +117,17 @@ def test_the_window_shows_the_degraded_banner(unreachable):
         win.deleteLater()
         app.processEvents()
         sv.shutdown()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows")
+def test_the_windows_folder_comes_from_windows_not_the_environment(monkeypatch):
+    """Audit finding SV-F04: WINDIR can be set by any program running as the user."""
+    from sentinel_vision import policy, scanner
+
+    monkeypatch.setenv("WINDIR", r"C:\Users\Public\fake")
+    monkeypatch.setenv("SystemRoot", r"C:\Users\Public\fake")
+    real = policy.windows_dir()
+    assert "fake" not in real.lower() and real.lower().endswith("windows")
+    monkeypatch.setattr(scanner, "SYSTEM_DIRS", scanner._system_dirs())
+    assert scanner.is_system_path(real + r"\System32\kernel32.dll")
+    assert not scanner.is_system_path(r"C:\Users\Public\fake\System32\evil.dll")
