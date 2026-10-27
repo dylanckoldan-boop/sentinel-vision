@@ -502,6 +502,31 @@ def cmd_shred(_sv: Sentinel, args) -> int:
     return 1 if failed else 0
 
 
+def cmd_release_key(_sv, args) -> int:
+    """For the project owner: create a new release-signing key, or list the keys this build trusts."""
+    from pathlib import Path
+
+    from sentinel_vision.pqsign import PRIVATE_KEY_FILE, PUBLIC_KEY_FILE, write_new_key
+    from sentinel_vision.trust import release_keys
+
+    if args.action == "list":
+        for k in release_keys():
+            print(f"trusted release key {k.key_id}")
+        return 0
+    folder = Path(args.folder).expanduser()
+    if (folder / PRIVATE_KEY_FILE).exists():
+        print(f"{folder / PRIVATE_KEY_FILE} already exists; choose an empty folder", file=sys.stderr)
+        return 2
+    pub = write_new_key(folder)
+    print(_c(GRN, f"New release-signing key {pub.key_id}"))
+    print(f"  private key: {folder / PRIVATE_KEY_FILE}")
+    print("    SECRET. Paste its contents into the SV_SIGNING_KEY secret only when the rotation steps say so,")
+    print("    then delete the file with: sentinel-vision-cli shred <file>")
+    print(f"  public key:  {folder / PUBLIC_KEY_FILE}  (safe to share; it gets pinned in trust.py)")
+    print("Steps: docs/CODE_SIGNING.md, 'Rotating the release key'.")
+    return 0
+
+
 def cmd_verify_release(_sv: Sentinel, args) -> int:
     """Verify downloaded release files against the post-quantum signed checksum list."""
     import hashlib
@@ -683,6 +708,9 @@ def build_parser() -> argparse.ArgumentParser:
     svc.add_argument("--self-test", action="store_true", help="check that other programs can't weaken protection")
     vr = sub.add_parser("verify-release", help="verify downloaded release files (post-quantum signature + SHA-256)")
     vr.add_argument("folder", nargs="?", default=".")
+    rk = sub.add_parser("release-key", help="for the project owner: create a release-signing key, list trusted keys")
+    rk.add_argument("action", choices=["new", "list"])
+    rk.add_argument("folder", nargs="?", default=".", help="with 'new': an empty folder for the key files")
     sh = sub.add_parser("shred", help="securely delete files or folders")
     sh.add_argument("paths", nargs="+")
     sh.add_argument("--yes", action="store_true", help="don't ask for confirmation")
@@ -724,6 +752,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.command == "plugin-log":
         return cmd_plugin_log(None, args)  # needs no scanner or definitions
+    if args.command == "release-key":
+        return cmd_release_key(None, args)
     try:
         sv = Sentinel()
         handler = {

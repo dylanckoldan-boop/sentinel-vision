@@ -101,6 +101,29 @@ class PrivateKey:
         return PublicKey(pq.public_key().public_bytes_raw(), classic.public_key().public_bytes_raw())
 
 
+PRIVATE_KEY_FILE = "sentinel-vision-signing-key.txt"
+PUBLIC_KEY_FILE = "sentinel-vision-signing-key.pub.txt"
+
+
+def write_new_key(folder) -> PublicKey:
+    """Create a new release-signing key in ``folder`` (audit finding SV-L03): the private key goes to
+    PRIVATE_KEY_FILE (readable by the current account only, never overwritten) and the public key, which is safe to
+    share, to PUBLIC_KEY_FILE. Returns the public key."""
+    import os
+    from pathlib import Path
+
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    key = PrivateKey.generate()
+    private = folder / PRIVATE_KEY_FILE
+    fd = os.open(str(private), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    with os.fdopen(fd, "w", encoding="ascii") as fh:
+        fh.write(key.to_b64() + "\n")
+    pub = key.public_key()
+    (folder / PUBLIC_KEY_FILE).write_text(f"key id: {pub.key_id}\n{pub.to_b64()}\n", encoding="ascii")
+    return pub
+
+
 def _digest(context: str, data: bytes) -> bytes:
     if not context or "\0" in context:
         raise SignatureError("invalid signing context")

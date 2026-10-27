@@ -16,7 +16,7 @@ stored as a GitHub Actions secret so the release workflow can sign:
 
 1. Open the file `sentinel-vision-signing-key.txt` you were given (one line of base64). Keep it private; store a copy
    in a password manager.
-2. On GitHub: **Settings → Secrets and variables → Actions → New repository secret**
+2. On GitHub: **Settings → Environments → release → Add environment secret** (see [REPO_SETTINGS.md](REPO_SETTINGS.md))
    - Name: `SV_SIGNING_KEY`
    - Secret: paste the line from the file
 3. Delete the file from your computer once it's stored safely.
@@ -24,9 +24,28 @@ stored as a GitHub Actions secret so the release workflow can sign:
 Releases published while the secret is missing are still built and checksummed, but the app will not install them
 automatically (it shows a link to the release page instead), and the workflow prints a warning.
 
-To create a new key (for example after a suspected leak): `python tools/pq_keygen.py OUTPUT_DIR`, add the printed
-public key to `trust.py`, publish one release signed with the **old** key that contains the new public key, then
-switch the secret and remove the old key in a later release.
+### Rotating the release key
+
+Do this when the private key may have been seen by anyone else, including when it was created somewhere other than
+your own computer (audit finding SV-L03). Apps only trust keys pinned in `trust.py`, so the new key has to reach
+users inside a release signed with the old one. Never switch the secret before step 4: a release signed with a key
+the installed apps don't know yet can't be installed automatically.
+
+1. **Create the new key on your own computer** (with Sentinel Vision 0.5.0 or later installed), in PowerShell:
+   `sentinel-vision-cli release-key new "$env:USERPROFILE\sv-new-key"`. This writes the private key
+   (`sentinel-vision-signing-key.txt`, secret) and the public key (`sentinel-vision-signing-key.pub.txt`, safe to
+   share). From a source checkout, `python tools/pq_keygen.py FOLDER` does the same.
+2. **Pin both keys.** Add the new public key to `RELEASE_KEYS_B64` in `trust.py`, after the current one, in a pull
+   request. `sentinel-vision-cli release-key list` on a build from that branch shows both key IDs.
+3. **Release once with the old key.** Publish that release as usual; the workflow still signs with the old key in
+   `SV_SIGNING_KEY`. Installed apps update to it and from then on trust both keys.
+4. **Switch the secret.** Settings → Environments → `release` → `SV_SIGNING_KEY` → paste the contents of the new
+   `sentinel-vision-signing-key.txt`. Store a copy in your password manager, then delete the file with
+   `sentinel-vision-cli shred "$env:USERPROFILE\sv-new-key\sentinel-vision-signing-key.txt"`.
+5. **Release with the new key**, and confirm `sentinel-vision-cli verify-release` shows the new key ID.
+6. **Remove the old key** from `trust.py` in a later release, once most installs have updated past step 3 (at
+   least one month). Anyone still on an older build sees a "not signed by a trusted key" message and can update
+   from the releases page by hand.
 
 ## Operating-system code signing (optional)
 
