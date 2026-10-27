@@ -260,6 +260,8 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$RUNNER_OS" == "macOS" ]]; then bin="dist/SentinelVision.app/Contents/MacOS"; else bin="dist/SentinelVision"; fi
+          if [[ "$RUNNER_OS" == "macOS" ]]; then res="dist/SentinelVision.app/Contents/Resources"; else res="$bin"; fi
+          grep -q "GNU LESSER GENERAL PUBLIC LICENSE" "$res/THIRD_PARTY_NOTICES.txt"
           "$bin/sentinel-vision-cli" --version
           "$bin/sentinel-vision-cli" status
           mkdir -p "$RUNNER_TEMP/samples"

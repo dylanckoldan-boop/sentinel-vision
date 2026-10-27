@@ -79,6 +79,7 @@ Progress "upgrade to the new version"
 Invoke-Setup $Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/LOG="install1.log"') "upgrade from $PreviousVersion"
 Assert (Test-Path "$newApp\SentinelVision.exe") "installed in Program Files"
 Assert (Test-Path "$newApp\sentinel-vision-service.exe") "service program installed"
+Assert ((Test-Path "$newApp\THIRD_PARTY_NOTICES.txt") -and (Select-String -Path "$newApp\THIRD_PARTY_NOTICES.txt" -Pattern 'GNU LESSER GENERAL PUBLIC LICENSE' -Quiet)) "third-party licence notices installed (audit SV-E01)"
 Assert (-not (Test-Path "$oldApp\SentinelVision.exe")) "old per-user copy removed"
 Assert (-not (Test-Path "HKCU:\$uninstKey")) "old per-user uninstall entry removed"
 Assert (Test-Path "HKLM:\$uninstKey") "new uninstall entry registered for all users"
@@ -137,6 +138,8 @@ W (& '$newApp\sentinel-vision-cli.exe' service --self-test 2>&1 | Out-String)
 W "selftest_exit=`$LASTEXITCODE"
 W (& '$newApp\sentinel-vision-cli.exe' rollback list 2>&1 | Out-String)
 W "rollback_exit=`$LASTEXITCODE"
+# audit SV-A05: an ordinary program can't add a rogue instance of the service's pipe
+try { `$ps = New-Object System.IO.Pipes.NamedPipeServerStream('SentinelVisionService', [System.IO.Pipes.PipeDirection]::InOut, -1); W 'PIPE_INSTANCE_ALLOWED'; `$ps.Dispose() } catch { W "pipe_instance_denied (`$(`$_.Exception.GetType().Name))" }
 W 'done'
 "@
 Set-Content -Path 'C:\Users\Public\svtest.ps1' -Value $probe
@@ -150,7 +153,15 @@ Assert ($r -match 'delete_data_denied') "an ordinary account can't delete the pr
 Assert ($r -match 'list_data_denied') "an ordinary account can't even list the protected data"
 Assert ($r -match 'replace_exe_denied') "an ordinary account can't replace the program"
 Assert ($r -match 'Tamper protection: OK' -and $r -match 'selftest_exit=0') "an ordinary account can't weaken protection through the service: $r"
+Assert ($r -match 'Administrator prompts: OK') "the installed program passes the check for running with administrator rights (audit SV-A08): $r"
+Assert ($r -match 'pipe_instance_denied \(UnauthorizedAccessException\)') "an ordinary account can't create a rogue pipe instance (audit SV-A05): $r"
 Assert ($r -notmatch 'Report 1\.txt' -and $r -match 'rollback_exit=0') "an ordinary account can't see another account's vault: $r"
+
+# audit SV-A01/SV-F04: developer switches are ignored by the installed build (any program could set them)
+$env:SENTINEL_VISION_NO_SERVICE = '1'; $env:SENTINEL_VISION_HOME = 'C:\Users\Public\sv-fake-home'
+$st = SvCli @('service')
+Remove-Item Env:SENTINEL_VISION_NO_SERVICE, Env:SENTINEL_VISION_HOME
+Assert ($st -match 'Protection service' -and -not (Test-Path 'C:\Users\Public\sv-fake-home')) "SENTINEL_VISION_NO_SERVICE and SENTINEL_VISION_HOME are ignored by the installed app"
 
 # ------------------------------------------------------------------------------------------------ app + watchdog
 Progress "the app with the service"
