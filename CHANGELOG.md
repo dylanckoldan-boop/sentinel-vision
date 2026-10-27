@@ -3,6 +3,73 @@
 All notable changes to Sentinel Vision are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-10-27
+
+This release closes the findings of the October 2026 readiness audit (IDs in brackets; the full list with the code
+and test for each public claim is in `docs/CLAIMS.md`).
+
+### Security
+- **Fails safe when the protection service is down (Windows) [SV-A01, SV-F04].** If the service is installed but
+  can't be reached, the app no longer falls back to storing protected data in your own folder. It shows a red
+  warning, keeps protection settings at least at their defaults, refuses weakening changes, and reconnects by itself
+  every 15 seconds. Developer switches (`SENTINEL_VISION_HOME`, `SENTINEL_VISION_NO_SERVICE`) are ignored by installed
+  builds, and the Windows folder is read from Windows rather than from the environment.
+- **The service's pipe [SV-A05]:** signed-in users can no longer create their own instance of it.
+- **Strict requests [SV-F01, SV-A03, SV-F06]:** every request to the service is checked against a schema (unknown
+  operations and arguments refused, NaN and infinity refused, exact types and ranges). Settings files with
+  out-of-range values fall back to safe defaults.
+- **Rollback vault [SV-A02, SV-F02]:** versions are kept by age (everything for 24 hours, hourly for a week, daily for
+  30 days) and a flood of new versions can't push good ones out: a full vault refuses new versions instead. The vault
+  only accepts files inside your protected folders, and restores never write through links or junctions.
+- **Restoring from quarantine needs administrator approval on Windows [SV-A04]**, through a one-time release that
+  expires after two minutes. The file is written back as you, not by the service.
+- **Limits on the service [SV-F03]:** at most 50 changing requests a second per account (bursts of 100), 4 transfers
+  and 4 GB in transit, 32 connections. Clients wait and retry automatically.
+- **Updates through the service, without an administrator prompt [SV-A07].** The service downloads the installer into
+  its own protected folder, verifies the post-quantum signature, SHA-256 and version, and runs it. Nothing is written
+  to your Temp folder.
+- **Administrator prompts only for protected programs [SV-A08]:** the app only asks to run itself with administrator
+  rights when only administrators can change its program file (and never when run from source).
+- **Machine-wide blocking floors [SV-A09]:** never blocks ranges wider than /16 (IPv4) or /32 (IPv6), DNS resolvers,
+  or the publishers of the threat feeds. When Windows code signing is set up, the service program is now signed
+  with the other programs (builds aren't code-signed yet).
+- **Data folder scanned [SV-A06]:** programs or scripts in Sentinel Vision's own data folder are now reported.
+- **Archive budget [SV-F05]:** listing compressed tar archives stops at a size and time budget
+  (`Archive.LimitReached`).
+- **Release-key rotation [SV-L03]:** `sentinel-vision-cli release-key new FOLDER` creates a new signing key on the
+  owner's computer; see "Rotating the release key" in `docs/CODE_SIGNING.md`.
+
+### Added
+- **Third-party licences [SV-E01]:** every bundled component with its licence text, generated at build time (the
+  build fails if one is missing), shipped next to the app and with each release, under Settings → Third-party
+  licences, and on the website.
+- **Claims register [SV-E02]** (`docs/CLAIMS.md`): each public promise with the code and test behind it, checked in CI.
+- Website: the download section shows the installer's SHA-256 and the signing key, taken from the release only after
+  its signature verifies [SV-C04]; after each deployment a job checks the live pages match the build [SV-C05];
+  "How Sentinel Vision was built" page [SV-D01..D04]; the Norton/McAfee comparison re-checked with dated sources and
+  reviewed every quarter [SV-C03, SV-E04]; CINS Army added to the list of everything that leaves your computer
+  [SV-C02].
+- Repository: CODEOWNERS, a `release` environment that holds the signing key, `docs/REPO_SETTINGS.md` [SV-B03]; the
+  accessibility checker installed from a lockfile [SV-B02]; GitHub Pages hosting recorded as an accepted risk in
+  SECURITY.md [SV-B01].
+
+### Changed
+- Public wording now matches what the code does: tamper protection protects against programs running with your
+  rights; the limits of degraded mode, restore approval and the file shredder are listed under Honest limitations
+  [SV-C01].
+
+### Fixed
+- Upgrading from 0.3.x could drop older rollback versions: the old vault was moved before the account's protected
+  folders were registered, so the service refused every version. The account is now registered first, and any
+  version the service refuses is kept (`vault-not-moved`) instead of deleted.
+- A right-to-left override character in the source is now escaped [SV-F07].
+
+### Notes for companion programs (Agent Guard)
+- The `quarantine add` output and exit codes, `plugin-log` format, `net block`, and `scan --json` keys are unchanged.
+- `plugin-log append` is rate-limited at 50 a second per account (at least 10 a second always works); the client
+  retries by itself.
+- `quarantine restore` now asks for administrator approval on Windows.
+
 ## [0.4.1] - 2026-10-26
 
 ### Security

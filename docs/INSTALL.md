@@ -141,9 +141,11 @@ Keep Microsoft Defender / XProtect turned on as well: Sentinel Vision is designe
 ## Updating
 
 - **Windows installer**: the app checks for new versions every 6 hours and shows a banner — click **Update now**.
-  The installer is downloaded, its post-quantum signature and SHA-256 checked, and the app upgraded and restarted
-  (Windows asks for administrator permission). Settings, history, quarantine and rollback vault are kept. You can also
-  run a newer Setup.exe over the existing install at any time.
+  From 0.5.0 on, the protection service downloads the installer into its own protected folder, checks its
+  post-quantum signature, SHA-256 and that it's newer, and installs it: no administrator prompt, and nothing is
+  written to your Temp folder. The app reopens where it was open. Settings, history, quarantine and rollback vault are
+  kept. Updating *to* 0.5.0 from 0.4.x still goes through the older updater, which asks for administrator permission
+  once. You can also run a newer Setup.exe over the existing install at any time.
 - **Portable, macOS, Linux**: the banner links to the new release; download and replace the old copy.
 - **From source**: `git pull` (or download the new ZIP) and run the `pip install .` step again.
 
