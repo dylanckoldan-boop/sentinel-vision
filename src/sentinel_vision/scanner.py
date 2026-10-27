@@ -35,6 +35,7 @@ PSEUDO_FS_ALLOWED = ("/dev/shm", "/run/media", "/run/user")  # real files live h
 PSEUDO_FS = ("/proc", "/sys", "/dev", "/run", "/snap", "/var/lib/docker", "/System/Volumes/Data/.Spotlight-V100")
 
 
+LIST_SECONDS = 10  # longest time spent listing one compressed tar archive
 EXACT_ENGINES = ("hash", "clamav", "cloud")
 
 
@@ -58,6 +59,11 @@ def _system_dirs() -> tuple[str, ...]:
 
 
 SYSTEM_DIRS = _system_dirs()
+
+
+def _in_data_dir(path: str) -> bool:
+    root = os.path.normcase(str(data_dir().resolve()))
+    return os.path.normcase(os.path.abspath(path)).startswith(root.rstrip(os.sep) + os.sep)
 
 
 def is_system_path(path: str) -> bool:
@@ -121,7 +127,73 @@ ResultCB = Callable[[ScanResult], None]
 
 
 class ArchiveLimitError(Exception):
-    pass
+    name = "Archive.Bomb"
+
+
+class ArchiveBudgetError(ArchiveLimitError):
+    """Decompressing the archive to list it took too much data or time (audit finding SV-F05)."""
+
+    name = "Archive.LimitReached"
+
+
+class CountingReader:
+    """A decompressed stream for tarfile that counts every byte decompressed (also when skipping forward, which it
+    does by reading) and stops at a byte or time budget, so a small download can't tie up the scanner."""
+
+    def __init__(self, inner, limit: int, seconds: float | None) -> None:
+        self.inner, self.limit, self.pos, self.count = inner, limit, 0, 0
+        self.deadline = time.monotonic() + seconds if seconds else None
+
+    def _charge(self, n: int) -> None:
+        self.count += n
+        if self.count > self.limit:
+            raise ArchiveBudgetError(f"more than {self.limit // (1024 * 1024):,} MB to decompress")
+        if self.deadline is not None and time.monotonic() > self.deadline:
+            raise ArchiveBudgetError("took too long to decompress")
+
+    def read(self, n: int = -1) -> bytes:
+        data = self.inner.read(n if n is not None and n >= 0 else 1024 * 1024)
+        self.pos += len(data)
+        self._charge(len(data))
+        return data
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        target = offset if whence == 0 else self.pos + offset if whence == 1 else None
+        if target is None:
+            raise OSError("seeking from the end is not supported")
+        if target < self.pos:
+            self.inner.seek(0)
+            self.pos = 0
+        while self.pos < target:
+            if not self.read(min(1024 * 1024, target - self.pos)):
+                break
+        return self.pos
+
+    def tell(self) -> int:
+        return self.pos
+
+    def seekable(self) -> bool:
+        return True
+
+    def readable(self) -> bool:
+        return True
+
+    def close(self) -> None:
+        self.inner.close()
+
+
+def _decompressor(head: bytes, fh):
+    import bz2
+    import gzip
+    import lzma
+
+    if head[:2] == b"\x1f\x8b":
+        return gzip.GzipFile(fileobj=fh)
+    if head[:3] == b"BZh":
+        return bz2.BZ2File(fh)
+    if head[:6] == b"\xfd7zXZ\x00":
+        return lzma.LZMAFile(fh)
+    return None
 
 
 class Scanner:
@@ -161,9 +233,33 @@ class Scanner:
 
     # ------------------------------------------------------------------ exclusions
     def _protected_dirs(self) -> list[str]:
-        return [str(PACKAGE_DIR), str(data_dir().resolve())]
+        return [str(PACKAGE_DIR)]
+
+    @staticmethod
+    def own_artefact(path: str) -> bool:
+        """Sentinel Vision's own files in its data folder (rules, lists, databases, logs, quarantine, vault,
+        settings). Everything else there is scanned: the folder is writable by any program running as the user, so
+        it must not be a hiding place (audit finding SV-A06)."""
+        root = os.path.normcase(str(data_dir().resolve()))
+        norm = os.path.normcase(os.path.abspath(path))
+        if not norm.startswith(root.rstrip(os.sep) + os.sep):
+            return False
+        parts = norm[len(root) :].strip(os.sep).split(os.sep)
+        top, name = parts[0], parts[-1]
+        ext = os.path.splitext(name)[1]
+        if top in ("quarantine", "vault", "feeds") and len(parts) > 1:
+            return True
+        if top == "rules" and ext in (".yar", ".yara"):
+            return True
+        if top == "logs" and (ext == ".log" or ".log." in name):
+            return True
+        if name.endswith((".db", ".db-wal", ".db-shm", ".db-journal")) and len(parts) == 1:
+            return True
+        return len(parts) == 1 and name in ("settings.json", "settings.json.tmp")
 
     def is_excluded(self, path: str) -> bool:
+        if self.own_artefact(path):
+            return True
         norm = os.path.normcase(os.path.abspath(path))
         for ex in [*self._protected_dirs(), *self.settings.exclusions]:
             exn = os.path.normcase(os.path.abspath(os.path.expanduser(ex)))
@@ -225,6 +321,16 @@ class Scanner:
             res.error = "; ".join(errs)
         res.kind = policy.file_kind(obj.head, obj.name)
         res.where = policy.location(str(p))
+        if res.kind in ("program", "script") and _in_data_dir(str(p)):
+            res.detections.append(
+                Detection(
+                    "location",
+                    "Suspicious.UnexpectedFileInDataFolder",
+                    Severity.MEDIUM,
+                    "A program or script inside Sentinel Vision's own data folder, where none belongs",
+                    {"report_only": True},
+                )
+            )
         self._drop_generated_rule_noise(res)
         self._apply_publisher_trust(obj, res)
         self._apply_location_context(res)
@@ -238,7 +344,7 @@ class Scanner:
                 res.detections.append(
                     Detection(
                         "archive",
-                        "Archive.Bomb",
+                        exc.name,
                         Severity.LOW,
                         f"Archive exceeds safety limits, so it was not checked completely: {exc}",
                         {"report_only": True},
@@ -290,8 +396,19 @@ class Scanner:
             members = zip_members()
         elif self._looks_like_tar(head):
             fh = obj.open()
+            dec = _decompressor(head, fh)
+            stream = None
             try:
-                tf = tarfile.open(fileobj=fh, mode="r:*")
+                if dec is not None:  # compressed: list through a counting reader with a byte and time budget
+                    budget = s.archive_bomb_total_mb * 1024 * 1024
+                    stream = CountingReader(dec, budget + s.archive_max_total_mb * 1024 * 1024, LIST_SECONDS)
+                    stream.limit = budget
+                    tf = tarfile.open(fileobj=stream, mode="r:")
+                else:
+                    tf = tarfile.open(fileobj=fh, mode="r:")
+            except ArchiveBudgetError:
+                fh.close()
+                raise
             except (tarfile.TarError, OSError, EOFError, ValueError):
                 fh.close()
                 return
@@ -304,6 +421,9 @@ class Scanner:
                     if len(infos) >= s.archive_max_members:
                         break
                 self._check_bomb(sum(m.size for m in infos), obj.size)
+                if stream is not None:  # listing done: reading the members has its own budget below
+                    stream.deadline = None
+                    stream.limit = stream.count + 2 * s.archive_max_total_mb * 1024 * 1024
             except (tarfile.TarError, OSError, EOFError, ValueError):
                 closer()
                 return
