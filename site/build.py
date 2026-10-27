@@ -2,6 +2,10 @@
 
     python site/build.py            # build
     python site/build.py --check    # build, then verify links, images, alt text, external resources and contrast
+    python site/build.py --offline  # local preview: skip the release signature check (no fingerprints shown)
+
+Without --offline the version, installer fingerprint and signing key shown come from the latest GitHub release,
+after its signed SHA256SUMS.txt verifies against the pinned keys (site/release_check.py); otherwise the build fails.
 
 The site is plain HTML and CSS: no JavaScript, no cookies, nothing loaded from other servers.
 Screenshots and icons are converted from the repository's own files (docs/screenshots, packaging/assets).
@@ -37,15 +41,39 @@ MAINTAINER = "Dylan Koldan"
 POLICY_DATE = dt.date(2026, 10, 11)  # change when the policies' meaning changes
 
 
-def version_and_date() -> tuple[str, dt.date]:
-    v = re.search(r'__version__ = "([^"]+)"', (ROOT / "src/sentinel_vision/__init__.py").read_text()).group(1)
+def version_and_date(v: str = "") -> tuple[str, dt.date]:
+    v = v or re.search(r'__version__ = "([^"]+)"', (ROOT / "src/sentinel_vision/__init__.py").read_text()).group(1)
     m = re.search(rf"^## \[{re.escape(v)}\] - (\d{{4}}-\d{{2}}-\d{{2}})", (ROOT / "CHANGELOG.md").read_text(), re.M)
     if not m:
         sys.exit(f"CHANGELOG.md has no '## [{v}] - YYYY-MM-DD' heading")
     return v, dt.date.fromisoformat(m.group(1))
 
 
-VERSION, RELEASED = version_and_date()
+OFFLINE = "--offline" in sys.argv
+if OFFLINE:
+    FACTS = None
+    VERSION, RELEASED = version_and_date()
+else:
+    sys.path.insert(0, str(SITE))
+    from release_check import ReleaseCheckError, latest
+
+    try:
+        FACTS = latest(OWNER)
+    except ReleaseCheckError as exc:
+        sys.exit(f"release check failed, the site was not built: {exc}")
+    VERSION, RELEASED = version_and_date(FACTS.version)
+
+
+def fingerprint_html() -> str:
+    if FACTS is None:
+        return (
+            '<p class="release-note">Offline preview: the published site shows the installer\'s verified '
+            "fingerprint here.</p>"
+        )
+    name, sha = FACTS.installer
+    return f"""<p>Fingerprint of <code>{name}</code>, checked against the signed list when this page was built:</p>
+        <p class="fingerprint"><code>{sha}</code></p>
+        <p class="release-note">Signed by release key <code>{FACTS.key_id}</code>.</p>"""
 
 
 def nice_date(d: dt.date) -> str:
@@ -150,7 +178,8 @@ def footer(prefix: str = "") -> str:
         <li><a href="{prefix}terms.html">Terms</a></li>
         <li><a href="{prefix}cookies.html">Cookies</a></li>
         <li><a href="{prefix}accessibility.html">Accessibility</a></li>
-        <li><a href="{REPO}/blob/main/LICENSE">Licence</a></li>
+        <li><a href="{prefix}about.html">How it was built</a></li>
+        <li><a href="{prefix}licences.html">Licences</a></li>
         <li><a href="{REPO}/blob/main/CHANGELOG.md">Changelog</a></li>
       </ul>
     </nav>
@@ -212,7 +241,7 @@ LEDGER = [
         "Threat-list downloads",
         ("on", "On by default", "Every 6 hours, and when you click Update now"),
         "The publisher of each list: GitHub (YARA Forge, Phishing.Database), abuse.ch, Spamhaus, "
-        "Proofpoint Emerging Threats, Phishing Army and OpenPhish",
+        "Proofpoint Emerging Threats, Phishing Army, OpenPhish, and CINS Army (off unless you turn it on)",
         "A request to download the list. The abuse.ch URLhaus and ThreatFox lists need a free abuse.ch key; if "
         "you add one, it's included so abuse.ch can authorise the download.",
     ),
@@ -279,8 +308,8 @@ def ledger_table() -> str:
   </tbody>
 </table>
 <p class="ledger-note">Like any internet request, each of these shows the receiving server your IP address and the
-app's name and version. The code that makes every request is <a href="{REPO}/tree/main/src/sentinel_vision">on GitHub</a>
-for anyone to check.</p>"""
+app's name and version. No AI services are contacted. The code that makes every request is
+<a href="{REPO}/tree/main/src/sentinel_vision">on GitHub</a> for anyone to check.</p>"""
 
 
 # --------------------------------------------------------------------------- pages
@@ -300,7 +329,11 @@ def index(sizes) -> str:
         ("Scheduled scans", "A daily quick scan and a weekly full scan, caught up if your computer was off."),
         ("Camera and microphone alerts", "Know when an app starts using them (Windows and Linux)."),
         ("Password breach check", "Find out whether a password appears in known breaches, without sending it."),
-        ("File shredder", "Overwrites files before deleting them."),
+        (
+            "File shredder",
+            "Overwrites files before deleting them. SSDs and cloud-synced folders can keep older copies, so use disk "
+            "encryption for full protection.",
+        ),
         (
             "Router and DNS checks",
             "Warns if a device on your network impersonates your router or your DNS "
@@ -309,8 +342,9 @@ def index(sizes) -> str:
         (
             "Tamper protection (Windows)",
             "A protected service keeps the quarantine, the rollback vault and your protection settings out of reach "
-            "of other programs. Turning protection off needs administrator approval, and the app is restarted if "
-            "something closes it.",
+            "of programs running with your rights. Turning protection off or restoring a quarantined file needs "
+            "administrator approval, and the app is restarted if something closes it. If the service is stopped, "
+            "the app warns you and keeps your settings at full strength until it's back.",
         ),
         (
             "Firewall blocking (Windows)",
@@ -347,8 +381,9 @@ def index(sizes) -> str:
         ),
         (
             "Stop malware that already has administrator rights",
-            "A program running as administrator can stop any program without a kernel driver. Approve administrator "
-            "prompts only for programs you started yourself.",
+            "A program running as administrator can stop any program, including the protection service, without a "
+            "kernel driver. Sentinel Vision warns you if that happens. Approve administrator prompts only for "
+            "programs you started yourself.",
         ),
         ("VPN, identity-theft insurance or credit monitoring", "These are paid services rather than software."),
     ]
@@ -447,6 +482,7 @@ def index(sizes) -> str:
 
     <h3>Also included</h3>
     <dl class="also">{also_html}</dl>
+    <p class="section-intro">Sentinel Vision contains no machine-learning model and sends nothing to AI services. Detections come from hash lists, YARA rules, ClamAV signatures and fixed heuristics. <a href="about.html">How Sentinel Vision was built</a>.</p>
   </div>
 </section>
 
@@ -487,6 +523,7 @@ def index(sizes) -> str:
         <code>Get-FileHash .\\SentinelVision-{VERSION}-Setup.exe</code> in PowerShell. If you already have
         Sentinel Vision, run <code>sentinel-vision-cli verify-release</code> in the download folder to check the
         signature and every fingerprint at once.</p>
+        {fingerprint_html()}
       </li>
       <li>
         <h3>Install</h3>
@@ -553,7 +590,8 @@ def privacy() -> str:
     <p>Links to GitHub and other sites take you to services with their own privacy policies.</p>
 
     <h2>The Sentinel Vision app</h2>
-    <p>The app has no account and sends nothing to us. We have no server that could receive anything.</p>
+    <p>The app has no account and sends nothing to us. We have no server that could receive anything.
+    Sentinel Vision contains no machine-learning model and sends nothing to AI services. Detections come from hash lists, YARA rules, ClamAV signatures and fixed heuristics.</p>
     <h3>What it sends over the internet</h3>
     {ledger_table()}
 
@@ -737,6 +775,94 @@ def accessibility() -> str:
 """
 
 
+def about() -> str:
+    return f"""
+<article class="prose">
+  <div class="wrap">
+    <h1>How Sentinel Vision was built</h1>
+    <p>Sentinel Vision is designed and maintained by {MAINTAINER}. Most of its code and documentation was written
+    with AI assistance (Anthropic's Claude), under his direction: he decides what it should do and what is
+    released.</p>
+    <h2>How changes are checked</h2>
+    <ul>
+      <li>Every change must pass the automated tests on Windows, macOS and Linux before it is released.</li>
+      <li>Each Windows release is installed, upgraded from the previous release and uninstalled on a clean Windows
+      machine, with checks that an ordinary account can't weaken its protection.</li>
+      <li>Every week, a false-positive audit scans clean Windows, macOS and Linux computers, and a test checks that
+      every threat list the app downloads still works.</li>
+      <li>The source code, the tests and every result are public on <a href="{REPO}">GitHub</a>.</li>
+    </ul>
+    <h2>Who is responsible</h2>
+    <p>{MAINTAINER} is responsible for the project and its releases. Using AI to write it doesn't change the
+    licence: like all MIT-licensed software, Sentinel Vision comes with no warranty (see the
+    <a href="terms.html">terms</a>).</p>
+    <h2>The program itself uses no AI</h2>
+    <p>Sentinel Vision contains no machine-learning model and sends nothing to AI services. Detections come from hash lists, YARA rules, ClamAV signatures and fixed heuristics.</p>
+    <p class="release-note">Anthropic and Claude are trademarks of Anthropic. This project is not affiliated with or
+    endorsed by Anthropic.</p>
+  </div>
+</article>"""
+
+
+# Open-source software included in the app: (name in requirements/build.lock, shown name, licence, home page)
+COMPONENTS = [
+    ("pyside6", "Qt for Python (PySide6) and Qt", "LGPL-3.0", "https://www.qt.io/qt-for-python"),
+    ("shiboken6", "Shiboken6", "LGPL-3.0", "https://www.qt.io/qt-for-python"),
+    ("yara-python", "yara-python, with the YARA library", "Apache-2.0 and BSD-3-Clause", "https://virustotal.github.io/yara/"),
+    ("cryptography", "cryptography, with OpenSSL", "Apache-2.0 or BSD-3-Clause; OpenSSL: Apache-2.0", "https://cryptography.io"),
+    ("cffi", "cffi", "MIT-0", "https://cffi.readthedocs.io"),
+    ("pycparser", "pycparser", "BSD-3-Clause", "https://github.com/eliben/pycparser"),
+    ("psutil", "psutil", "BSD-3-Clause", "https://github.com/giampaolo/psutil"),
+    ("watchdog", "watchdog", "Apache-2.0", "https://github.com/gorakhargosh/watchdog"),
+    ("pefile", "pefile", "MIT", "https://github.com/erocarrera/pefile"),
+    ("platformdirs", "platformdirs", "MIT", "https://github.com/platformdirs/platformdirs"),
+    ("certifi", "certifi", "MPL-2.0", "https://github.com/certifi/python-certifi"),
+    ("pywin32", "pywin32 (Windows only)", "PSF-2.0", "https://github.com/mhammond/pywin32"),
+]  # fmt: skip
+
+
+def locked_version(name: str) -> str:
+    m = re.search(rf"^{re.escape(name)}==([^\s;]+)", (ROOT / "requirements" / "build.lock").read_text(), re.M)
+    return m.group(1) if m else ""
+
+
+def licences() -> str:
+    rows = "".join(
+        f'<tr><td><a href="{url}">{html.escape(shown)}</a></td><td>{locked_version(name)}</td>'
+        f"<td>{html.escape(lic)}</td></tr>"
+        for name, shown, lic, url in COMPONENTS
+    )
+    py = "3.12"
+    qt = locked_version("pyside6")
+    return f"""
+<article class="prose">
+  <div class="wrap">
+    <h1>Licences</h1>
+    <p>Sentinel Vision is free software under the <a href="{REPO}/blob/main/LICENSE">MIT licence</a>. Each download
+    also includes the open-source software below, under its own licence. The full licence texts come with the app
+    (Settings &rarr; <em>Third-party licences</em>) and with every release as
+    <a href="{REPO}/releases/latest/download/THIRD_PARTY_NOTICES.txt">THIRD_PARTY_NOTICES.txt</a>.</p>
+    <table>
+      <caption>Software included in the current release</caption>
+      <thead><tr><th scope="col">Software</th><th scope="col">Version</th><th scope="col">Licence</th></tr></thead>
+      <tbody>{rows}<tr><td><a href="https://www.python.org">Python</a></td><td>{py}</td><td>PSF-2.0</td></tr></tbody>
+    </table>
+    <h2>Qt and PySide6 (LGPL-3.0)</h2>
+    <p>Qt and Qt for Python are used under the GNU Lesser General Public License version 3. They are separate
+    libraries inside the app, so you may replace them with your own modified versions. Their source code for the
+    version in the current release ({qt}) is available from
+    <a href="https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-{qt}-src/">download.qt.io</a> and
+    <a href="https://code.qt.io/cgit/pyside/pyside-setup.git/tag/?h=v{qt}">code.qt.io</a>. Qt also includes
+    components under their own licences, listed in
+    <a href="https://doc.qt.io/qt-6/licenses-used-in-qt.html">Qt's documentation</a>.</p>
+    <h2>Threat data</h2>
+    <p>The threat lists the app downloads come from their publishers under their own terms, listed on the
+    <a href="index.html#credits">home page</a>. The Phishing Army and OpenPhish lists are for personal,
+    non-commercial use.</p>
+  </div>
+</article>"""
+
+
 def not_found() -> str:
     return """
 <article class="prose">
@@ -771,6 +897,18 @@ def build() -> None:
             "Accessibility",
             "How this website is made accessible, and how to report a problem.",
             accessibility(),
+            "",
+        ),
+        "about.html": (
+            "How Sentinel Vision was built",
+            "Who makes Sentinel Vision, how AI was used, and how every change is checked.",
+            about(),
+            "",
+        ),
+        "licences.html": (
+            "Licences",
+            "The open-source software included in Sentinel Vision and its licences.",
+            licences(),
             "",
         ),
         "404.html": ("Page not found", "This page doesn't exist.", not_found(), ""),

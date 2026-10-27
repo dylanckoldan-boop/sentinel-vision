@@ -100,8 +100,15 @@ def test_machine_wide_blocking_on_freely_off_with_admin(core):
     assert core.applier.calls == ["hosts+", "hosts-"]
 
 
-def test_users_cannot_see_each_others_vault_or_quarantine(core):
-    v = core.handle(ALICE, "vault.store", {"key": "c:\\docs\\a.txt", "mtime": 1}, b"alice secret")[0]["version"]
+def _protect(core, caller, folder):
+    """Register the account with ``folder`` protected (the vault only keeps files in protected folders)."""
+    core.handle(caller, "policy.set", {"policy": {"ransomware_folders": [str(folder)]}})
+
+
+def test_users_cannot_see_each_others_vault_or_quarantine(core, tmp_path):
+    _protect(core, ALICE, tmp_path)
+    key = os.path.normcase(os.path.abspath(tmp_path / "a.txt"))
+    v = core.handle(ALICE, "vault.store", {"key": key, "mtime": 1}, b"alice secret")[0]["version"]
     assert core.handle(ALICE, "vault.read", {"id": v["id"]})[1] == b"alice secret"
     with pytest.raises(ServiceError):
         core.handle(BOB, "vault.read", {"id": v["id"]})
@@ -125,6 +132,10 @@ def test_quarantine_round_trip_through_the_service(core):
     # stored encrypted
     stored = (core.root / "users" / ALICE.sid / "quarantine" / f"{item['id']}.svq").read_bytes()
     assert data[:4096] not in stored
+    with pytest.raises(ServiceError) as denied:  # decrypting needs administrator approval (audit finding SV-A04)
+        core.handle(ALICE, "quarantine.open", {"id": item["id"]})
+    assert denied.value.code == "elevation_required"
+    core.handle(ALICE_ADMIN, "quarantine.release", {"sid": ALICE.sid, "id": item["id"]})
     o = core.handle(ALICE, "quarantine.open", {"id": item["id"]})[0]
     got, off = b"", 0
     while True:
@@ -158,6 +169,7 @@ def test_remote_vault_and_quarantine_behave_like_local_ones(core, tmp_path):
     vault = RemoteVault(t)
     docs = tmp_path / "Documents"
     docs.mkdir()
+    _protect(core, ALICE, docs)
     f = docs / "notes.txt"
     f.write_text("version one\n" * 50)
     assert vault.snapshot(f) is not None
@@ -175,6 +187,12 @@ def test_remote_vault_and_quarantine_behave_like_local_ones(core, tmp_path):
     original = bad.read_bytes()
     item = q.add(bad, "Test.Threat", "hash")
     assert not bad.exists() and [i.id for i in q.list()] == [item.id]
+    from sentinel_vision.quarantine import QuarantineNeedsApproval
+
+    with pytest.raises(QuarantineNeedsApproval):
+        q.restore(item.id)
+    assert bad.exists() is False  # nothing was written
+    core.handle(ALICE_ADMIN, "quarantine.release", {"sid": ALICE.sid, "id": item.id})
     out = q.restore(item.id)
     assert out.read_bytes() == original and q.list() == []
 
@@ -185,6 +203,7 @@ def test_migrating_a_local_vault_and_quarantine(core, tmp_path):
     from sentinel_vision.vault import RollbackVault
 
     lv = RollbackVault(tmp_path / "old-vault")
+    _protect(core, ALICE, tmp_path)
     doc = tmp_path / "a.txt"
     doc.write_text("hello\n" * 100)
     lv.snapshot(doc)
@@ -198,6 +217,37 @@ def test_migrating_a_local_vault_and_quarantine(core, tmp_path):
     assert not (tmp_path / "old-vault").exists() and not (tmp_path / "old-q").exists()
     assert RemoteVault(t).stats()[0] == 1 and len(RemoteQuarantine(t).list()) == 1
     assert migrate_local_data(t, tmp_path / "old-vault", tmp_path / "old-q") == (0, 0)  # idempotent
+
+
+def test_first_start_moves_the_local_vault_after_registering_the_policy(core, tmp_path, isolated_home):
+    """Upgrading from a per-user install: the account's policy (its protected folders) must exist before the old
+    vault is moved, or every version is refused. Versions the service won't take are kept, never deleted."""
+    from sentinel_vision.config import sub_dir
+    from sentinel_vision.core import Sentinel
+    from sentinel_vision.service_client import LocalTransport, RemoteVault
+    from sentinel_vision.vault import RollbackVault
+
+    docs, other = tmp_path / "docs", tmp_path / "elsewhere"
+    docs.mkdir()
+    other.mkdir()
+    lv = RollbackVault(sub_dir("vault"))
+    for folder in (docs, other):
+        f = folder / "report.txt"
+        f.write_text("quarterly report\n" * 50)
+        lv.snapshot(f)
+    lv.close()
+    s = Settings()
+    s.realtime_enabled = s.network_enabled = s.ransomware_enabled = False
+    s.feeds = []
+    s.ransomware_folders = [str(docs)]
+    sv = Sentinel(s, service=LocalTransport(core, ALICE))
+    assert isinstance(sv.vault, RemoteVault)
+    assert sv.migrated[0] == 1
+    assert [f[0] for f in sv.vault.files()] == [os.path.normcase(str(docs / "report.txt"))]
+    assert not (sub_dir("vault") / "vault.key").exists()
+    kept = sub_dir("vault").with_name("vault-not-moved")
+    assert (kept / "vault.key").exists()  # the version outside the protected folders is kept, not destroyed
+    sv.shutdown()
 
 
 def test_frames_round_trip():
@@ -382,3 +432,24 @@ def test_events_in_the_same_clock_tick_are_never_missed(core, isolated_home, mon
     assert [e["kind"] for e in second] == ["refused"] and second[0]["seq"] > first[-1]["seq"]
     assert sv.service_tick() == []  # nothing twice
     sv.shutdown()
+
+
+def test_quarantine_release_is_one_time_and_needs_an_administrator(core, monkeypatch):
+    from sentinel_vision import servicecore
+
+    t = core.handle(ALICE, "quarantine.begin", {"original_path": "C:/x/a.exe", "threat": "T", "engine": "hash"})[0]
+    core.handle(ALICE, "quarantine.chunk", {"token": t["token"]}, b"MZ test")
+    item = core.handle(ALICE, "quarantine.commit", {"token": t["token"]})[0]["item"]
+    with pytest.raises(ServiceError):  # an ordinary program can't approve its own restore
+        core.handle(ALICE, "quarantine.release", {"sid": ALICE.sid, "id": item["id"]})
+    core.handle(ALICE_ADMIN, "quarantine.release", {"sid": ALICE.sid, "id": item["id"]})
+    tok = core.handle(ALICE, "quarantine.open", {"id": item["id"]})[0]["token"]
+    core.handle(ALICE, "quarantine.close", {"token": tok})
+    with pytest.raises(ServiceError):  # the approval is used up
+        core.handle(ALICE, "quarantine.open", {"id": item["id"]})
+    core.handle(ALICE_ADMIN, "quarantine.release", {"sid": ALICE.sid, "id": item["id"]})
+    clock = servicecore.time.time() + servicecore.RELEASE_SECONDS + 1
+    monkeypatch.setattr(servicecore.time, "time", lambda: clock)
+    with pytest.raises(ServiceError):  # and expires
+        core.handle(ALICE, "quarantine.open", {"id": item["id"]})
+    assert any(e.kind == "refused" for e in core.events)

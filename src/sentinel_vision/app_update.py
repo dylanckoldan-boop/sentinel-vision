@@ -15,9 +15,7 @@ import hashlib
 import json
 import os
 import re
-import subprocess
 import sys
-import tempfile
 import urllib.error
 from dataclasses import dataclass
 from pathlib import Path
@@ -137,12 +135,15 @@ def verify_checksums(sums: bytes, signature: bytes | None) -> str:
         raise AppUpdateError(f"the release signature is invalid ({exc}); the update was not run") from exc
 
 
-def download_installer(info: ReleaseInfo) -> Path:
-    if not can_self_install(info):
-        raise AppUpdateError("automatic installation is only available for the Windows installer build")
+def fetch_verified_installer(info: ReleaseInfo, folder: Path) -> Path:
+    """Download the release's installer into ``folder`` after checking, in this order: it is newer than this build
+    (never a downgrade), its checksum list carries a valid post-quantum signature from a pinned key, and its SHA-256
+    is the one in that list. Older installers in ``folder`` are removed."""
     m = INSTALLER_RE.match(info.installer_name)
     if not m or m.group(1) != info.version or not is_newer(info.version):
         raise AppUpdateError("installer version does not match the release (refusing a possible downgrade)")
+    if not info.sums_url:
+        raise AppUpdateError("the release has no checksum list; it can't be installed automatically")
     sums_raw = download(info.sums_url, limit=1024 * 1024)
     verify_checksums(sums_raw, download(info.sig_url, limit=64 * 1024) if info.sig_url else None)
     sums = sums_raw.decode("utf-8", errors="replace")
@@ -151,19 +152,28 @@ def download_installer(info: ReleaseInfo) -> Path:
     got = hashlib.sha256(data).hexdigest()
     if got != want:
         raise AppUpdateError("downloaded installer failed its SHA-256 check; the update was not run")
-    folder = Path(tempfile.mkdtemp(prefix="sentinel-vision-update-"))
+    folder.mkdir(parents=True, exist_ok=True)
+    for old in folder.glob("SentinelVision-*-Setup.exe"):
+        old.unlink(missing_ok=True)
     target = folder / info.installer_name
-    fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0), 0o600)
     with os.fdopen(fd, "wb") as fh:
         fh.write(data)
     return target
 
 
-def run_installer(path: Path) -> None:
-    """Start the verified installer. It closes this app itself, upgrades, then relaunches it."""
-    flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen(  # noqa: S603 - fixed argument list, verified file
-        [str(path), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/RELAUNCH=1"],
-        creationflags=flags,
-        close_fds=True,
-    )
+SERVICE_INSTALLER_ARGS = ("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SERVICEUPDATE=1")
+
+
+def service_update(folder: Path, launch, latest=check_latest) -> str:
+    """Run by the protection service (audit finding SV-A07): fetch, verify and start the newest release's installer
+    from the service's own protected ``folder``, so no program running as the user can swap it between the check and
+    the launch. ``launch(path, args)`` starts it. Returns the version being installed."""
+    info = latest()
+    if info is None:
+        raise AppUpdateError("Sentinel Vision is up to date")
+    if not info.installer_url or not (info.signed or not release_keys()):
+        raise AppUpdateError("the newest release can't be installed automatically (no signed installer)")
+    path = fetch_verified_installer(info, folder)
+    launch(path, [*SERVICE_INSTALLER_ARGS, f"/LOG={folder / 'install.log'}"])
+    return info.version

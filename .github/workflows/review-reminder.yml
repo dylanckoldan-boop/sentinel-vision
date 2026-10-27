@@ -1,0 +1,40 @@
+# Audit finding SV-C03/SV-E04: competitor facts and public claims go stale. Every quarter, open an issue asking for
+# docs/COMPARISON.md and docs/CLAIMS.md to be re-checked against their sources.
+name: Quarterly claims review
+
+on:
+  schedule:
+    - cron: "23 9 2 1,4,7,10 *"  # 09:23 UTC on the 2nd of January, April, July and October
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Open the review issue (once per quarter)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          quarter="$(date -u +%Y)-Q$(( ($(date -u +%-m) - 1) / 3 + 1 ))"
+          title="Quarterly review of the comparison and claims ($quarter)"
+          if gh issue list --state all --search "\"$title\" in:title" --json number --jq 'length' | grep -qv '^0$'; then
+            echo "already open for $quarter"; exit 0
+          fi
+          last="$(grep -m1 '^Last reviewed:' docs/COMPARISON.md || true)"
+          body=$(printf '%s\n' \
+            "Time for the quarterly review (audit findings SV-C03 and SV-E04)." \
+            "" \
+            "Comparison page currently says: \`$last\`" \
+            "" \
+            "- [ ] Re-check every Norton and McAfee cell in docs/COMPARISON.md against its source; replace dead links" \
+            "- [ ] Update the AV-TEST results to the latest Windows test" \
+            "- [ ] Re-read docs/CLAIMS.md: every website and README claim still has an implementation and a test" \
+            "- [ ] Update the 'Last reviewed' lines with today's date and the current version" \
+            "- [ ] Project owner approves the changes before merge")
+          gh issue create --title "$title" --body "$body"

@@ -143,6 +143,8 @@ class MainWindow(QMainWindow):
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(0)
+        self.degraded_banner = self._build_degraded_banner()
+        rl.addWidget(self.degraded_banner)
         self.banner = self._build_banner()
         rl.addWidget(self.banner)
         rl.addWidget(self.stack, 1)
@@ -212,6 +214,21 @@ class MainWindow(QMainWindow):
             self.service_timer.start(60_000)
             self._one_shot(3000, self._service_tick)
 
+        self._reconnect_task: Task | None = None
+        if self.sentinel.degraded:
+            self._show_degraded_state()
+            self.reconnect_timer = QTimer(self)
+            self.reconnect_timer.timeout.connect(self._try_reconnect)
+            self.reconnect_timer.start(15_000)
+            self._one_shot(
+                1500,
+                lambda: self.notify(
+                    "Tamper protection is off",
+                    "Sentinel Vision can't reach its protection service. Protection stays at full strength.",
+                    "danger",
+                ),
+            )
+
         self._load_plugins()  # last: plugins get a fully built window (tray, notifications, navigation)
         self.navigate("overview")
         self._update_status()
@@ -247,6 +264,67 @@ class MainWindow(QMainWindow):
             t.stop()
 
     # ------------------------------------------------------------------ update banner
+    def _build_degraded_banner(self) -> QFrame:
+        """Shown for as long as the installed protection service can't be reached (audit finding SV-A01)."""
+        f = QFrame()
+        f.setObjectName("degradedBanner")
+        f.setStyleSheet(
+            f"QFrame#degradedBanner {{ background: #3a1216; border-bottom: 1px solid {theme.DANGER}; }}"
+            f"QLabel {{ color: {theme.TEXT}; }}"
+        )
+        lay = QHBoxLayout(f)
+        lay.setContentsMargins(28, 10, 28, 10)
+        self.degraded_text = QLabel()
+        self.degraded_text.setWordWrap(True)
+        self.degraded_text.setTextFormat(Qt.RichText)
+        lay.addWidget(self.degraded_text, 1)
+        f.setVisible(False)  # no "Later" button: it stays until the service is back
+        return f
+
+    def _show_degraded_state(self) -> None:
+        sv = self.sentinel
+        if not sv.degraded:
+            self.degraded_banner.setVisible(False)
+            return
+        if sv.degraded_reason == "impostor":
+            why = "Another program is answering in its place, which may be an attack. Run a full scan."
+        else:
+            why = "It isn't running or can't be reached. Sentinel Vision keeps trying every 15 seconds."
+        self.degraded_text.setText(
+            f"<b style='color:{theme.DANGER}'>Protection service unreachable — tamper protection is off.</b> {why} "
+            "Protection stays at full strength, nothing is quarantined or kept in the rollback vault until it's back, "
+            "and protection can't be reduced."
+        )
+        self.degraded_banner.setVisible(True)
+
+    def _try_reconnect(self) -> None:
+        """Degraded mode: try to reach the service again (off the window's thread)."""
+        if self._quitting or not self.sentinel.degraded or self._reconnect_task is not None:
+            return
+        sv = self.sentinel
+        task = Task(lambda _t: sv.try_reconnect())
+        task.signals.finished.connect(self._reconnected)
+        task.signals.failed.connect(lambda _e: setattr(self, "_reconnect_task", None))
+        self._reconnect_task = start(task)
+
+    def _reconnected(self, ok) -> None:
+        self._reconnect_task = None
+        if ok:
+            self._show_degraded_state()
+            self.reload_protected_pages()
+            if not hasattr(self, "service_timer"):
+                self.service_timer = QTimer(self)
+                self.service_timer.timeout.connect(self._service_tick)
+                self.service_timer.start(60_000)
+
+    def reload_protected_pages(self) -> None:
+        for page in self.pages.values():
+            if hasattr(page, "load"):
+                try:
+                    page.load()
+                except Exception as exc:
+                    log.warning("reloading a page failed: %s", exc)
+
     def _build_banner(self) -> QFrame:
         f = QFrame()
         f.setObjectName("banner")
@@ -288,7 +366,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Check for updates", f"You have the latest version ({__version__}).")
             return
         self.available_update = info
-        auto = app_update.can_self_install(info)
+        # installed by the protection service only (never from a folder other programs can write to)
+        auto = app_update.can_self_install(info) and self.sentinel.service is not None
         self.banner_text.setText(
             f"<b>Sentinel Vision {info.version}</b> is available (you have {__version__})."
             + ("" if auto else " Download it from the release page.")
@@ -304,7 +383,7 @@ class MainWindow(QMainWindow):
         info = self.available_update
         if info is None:
             return
-        if not app_update.can_self_install(info):
+        if not app_update.can_self_install(info) or self.sentinel.service is None:
             QDesktopServices.openUrl(QUrl(info.page_url))
             return
         if self._update_task is not None:
@@ -313,28 +392,29 @@ class MainWindow(QMainWindow):
             QMessageBox.question(
                 self,
                 "Install update",
-                f"Download and install Sentinel Vision {info.version}?\n\n"
-                "The installer is verified against the release's SHA-256 checksums, closes Sentinel Vision, "
-                "upgrades it and starts it again. Your settings, quarantine and history are kept.",
+                f"Install Sentinel Vision {info.version}?\n\n"
+                "The protection service downloads it, checks its post-quantum signature and SHA-256, and installs "
+                "it. Sentinel Vision closes and starts again on its own. Your settings, quarantine and history "
+                "are kept.",
             )
             != QMessageBox.Yes
         ):
             return
         self.banner_go.setEnabled(False)
-        self.banner_go.setText("Downloading…")
-        task = Task(lambda _t: app_update.download_installer(info))
-        task.signals.finished.connect(self._run_installer)
+        self.banner_go.setText("Installing…")
+        service = self.sentinel.service
+        task = Task(lambda _t: service.call("update.install", {"version": info.version})[0])
+        task.signals.finished.connect(self._update_started)
         task.signals.failed.connect(self._update_failed)
         self._update_task = start(task)
 
-    def _run_installer(self, path) -> None:
+    def _update_started(self, result) -> None:
         self._update_task = None
-        try:
-            app_update.run_installer(path)
-        except Exception as exc:
-            self._update_failed(str(exc))
-            return
-        self.quit()
+        version = (result or {}).get("version", "")
+        self.banner_text.setText(
+            f"<b>Installing Sentinel Vision {version}.</b> It closes in a moment and starts again on its own."
+        )
+        self.banner_go.setVisible(False)
 
     def _update_failed(self, err: str) -> None:
         self._update_task = None
@@ -687,7 +767,8 @@ def main() -> int:
     app.setQuitOnLastWindowClosed(False)
 
     server = _single_instance(app, show_existing=not minimized)
-    if server is None and not os.environ.get("SENTINEL_VISION_MULTI"):
+    multi = bool(os.environ.get("SENTINEL_VISION_MULTI")) and not getattr(sys, "frozen", False)  # developers only
+    if server is None and not multi:
         return 0  # already running (it was brought to the front unless this was a sign-in launch)
     _windows_mutex()
 

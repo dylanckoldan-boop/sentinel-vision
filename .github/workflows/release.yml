@@ -77,8 +77,13 @@ jobs:
           $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup*\ISCC.exe", "$env:ProgramFiles\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $iscc) { Write-Host "::error title=Inno Setup::ISCC.exe not found"; exit 1 }
           Write-Host "::notice title=Inno Setup::$($iscc.FullName) $((Get-Item $iscc.FullName).VersionInfo.ProductVersion)"
+      - name: Third-party notices (fails if a bundled package has no licence)
+        run: python tools/third_party_notices.py build/notices/THIRD_PARTY_NOTICES.txt
       - name: Build app (PyInstaller)
-        run: pyinstaller --noconfirm packaging/sentinel_vision.spec
+        run: |
+          pyinstaller --noconfirm packaging/sentinel_vision.spec
+          Copy-Item build\notices\THIRD_PARTY_NOTICES.txt dist\SentinelVision\
+          Copy-Item LICENSE dist\SentinelVision\LICENSE.txt
       - name: Sign executables (optional)
         if: env.WINDOWS_CERT_PFX_BASE64 != ''
         shell: pwsh
@@ -86,7 +91,7 @@ jobs:
           $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
           $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
-          & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CERT_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 dist\SentinelVision\SentinelVision.exe dist\SentinelVision\sentinel-vision-cli.exe
+          & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CERT_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 dist\SentinelVision\SentinelVision.exe dist\SentinelVision\sentinel-vision-cli.exe dist\SentinelVision\sentinel-vision-service.exe
           if ($LASTEXITCODE -ne 0) { throw "signing failed" }
       - name: Build installer (Inno Setup)
         shell: pwsh
@@ -108,6 +113,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
           Copy-Item "dist\installer\SentinelVision-$env:VERSION-Setup.exe" out\
+          Copy-Item build\notices\THIRD_PARTY_NOTICES.txt out\
           Compress-Archive -Path dist\SentinelVision -DestinationPath "out\SentinelVision-$env:VERSION-windows-portable.zip"
           Get-ChildItem out
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -240,12 +246,22 @@ jobs:
         run: |
           pip install --require-hashes -r requirements/build.lock
           pip install --no-deps --no-build-isolation .
-      - run: pyinstaller --noconfirm packaging/sentinel_vision.spec
+      - name: Third-party notices (fails if a bundled package has no licence)
+        run: python tools/third_party_notices.py build/notices/THIRD_PARTY_NOTICES.txt
+      - name: Build app (PyInstaller)
+        shell: bash
+        run: |
+          pyinstaller --noconfirm packaging/sentinel_vision.spec
+          if [[ "$RUNNER_OS" == "macOS" ]]; then dest="dist/SentinelVision.app/Contents/Resources"; else dest="dist/SentinelVision"; fi
+          cp build/notices/THIRD_PARTY_NOTICES.txt "$dest/"
+          cp LICENSE "$dest/LICENSE.txt"
       - name: Smoke test
         shell: bash
         run: |
           set -euo pipefail
           if [[ "$RUNNER_OS" == "macOS" ]]; then bin="dist/SentinelVision.app/Contents/MacOS"; else bin="dist/SentinelVision"; fi
+          if [[ "$RUNNER_OS" == "macOS" ]]; then res="dist/SentinelVision.app/Contents/Resources"; else res="$bin"; fi
+          grep -q "GNU LESSER GENERAL PUBLIC LICENSE" "$res/THIRD_PARTY_NOTICES.txt"
           "$bin/sentinel-vision-cli" --version
           "$bin/sentinel-vision-cli" status
           mkdir -p "$RUNNER_TEMP/samples"
@@ -278,6 +294,9 @@ jobs:
       startsWith(github.ref, 'refs/tags/v') ||
       (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
+    # audit finding SV-B03: the signing key is only released to this job after the owner approves the
+    # deployment (Settings -> Environments -> release -> Required reviewers; see docs/REPO_SETTINGS.md)
+    environment: release
     permissions:
       contents: write
     env:

@@ -63,7 +63,13 @@ def test_vault_refuses_encrypted_content_and_keeps_limits(vault, tmp_path):
     for i in range(6):
         doc.write_bytes(_docx(f"rev{i}"))
         vault.snapshot(doc)
-    assert len(vault.versions(doc)) == 3  # keep_versions
+    assert len(vault.versions(doc)) == 7  # everything from the last 24 hours is kept (audit finding SV-A02)
+    # two days later: the newest, plus one for the hour they were all made in
+    import time as _time
+
+    with vault._lock:
+        vault._thin(vault._key(doc), _time.time() + 2 * 86400)
+    assert len(vault.versions(doc)) == 2
     big = tmp_path / "big.txt"
     big.write_bytes(b"a" * (6 * 1024 * 1024))
     assert vault.snapshot(big) is None  # above max_file_mb
@@ -281,3 +287,54 @@ def test_slow_encryption_below_the_burst_rate_still_trips(shield, monkeypatch):
     for i in range(ransomware.SLOW_THRESHOLD):
         sh._record_transform(str(folder / f"doc{i}.docx"))
     assert sh.incidents and sh.incidents[-1].trigger == "slow-encryption"
+
+
+def test_vault_retention_by_age(vault, tmp_path, monkeypatch):
+    """Versions spread over 40 days: young ones all kept, then hourly, then daily, at most keep_versions (3)."""
+    from sentinel_vision import vault as vault_mod
+
+    now = 2_000_000_000.0
+    clock = [now - 40 * 86400]
+    monkeypatch.setattr(vault_mod.time, "time", lambda: clock[0])
+    key = vault._key(tmp_path / "notes.txt")
+    for i in range(40):  # one version a day for 40 days
+        clock[0] = now - (40 - i) * 86400
+        vault.store(key, f"day {i}".encode() * 20, clock[0])
+    for i in range(5):  # five today, minutes apart
+        clock[0] = now - 3600 + i * 60
+        vault.store(key, f"today {i}".encode() * 20, clock[0])
+    clock[0] = now
+    vault._thin(key, now)
+    ages = sorted((now - v.ts) / 86400 for v in vault.versions(key))
+    young = [a for a in ages if a < 1]
+    old = [a for a in ages if a >= 1]
+    assert len(young) == 5  # everything from the last 24 hours
+    assert len(old) == 3 and max(old) < 30  # keep_versions of the older ones, nothing beyond 30 days
+
+
+def test_vault_flood_is_refused_and_good_versions_survive(vault, tmp_path):
+    from sentinel_vision.vault import VaultRefused
+
+    key = vault._key(tmp_path / "taxes.txt")
+    vault.store(key, b"real notes" * 100, 1.0)
+    refused = 0
+    for i in range(100):
+        try:
+            vault.store(key, f"junk {i}".encode() * 100, 2.0 + i)
+        except VaultRefused:
+            refused += 1
+    assert refused == 100 - 29  # 30 new versions of one file per hour
+    assert any(v.size == 1000 and vault.read(v.id)[1] == b"real notes" * 100 for v in vault.versions(key))
+
+
+def test_vault_full_of_young_versions_refuses_instead_of_evicting(tmp_path):
+    from sentinel_vision.vault import RollbackVault, VaultRefused
+
+    v = RollbackVault(tmp_path / "small", max_file_mb=5, max_total_mb=1, keep_versions=3)
+    try:
+        v.store(v._key(tmp_path / "a.txt"), b"a" * 600_000, 1.0)
+        with pytest.raises(VaultRefused):
+            v.store(v._key(tmp_path / "b.txt"), b"b" * 600_000, 1.0)
+        assert len(v.versions(tmp_path / "a.txt")) == 1
+    finally:
+        v.close()

@@ -37,9 +37,13 @@ DESCRIPTION = (
 )
 # only Windows itself (SYSTEM) and administrators; inherited by everything inside; owner SYSTEM
 DATA_SDDL = "O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
-# signed-in users may connect; never over the network; nobody may create a second server instance
-PIPE_SDDL = "D:P(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"
+# Signed-in users may connect (read, write data, set the read mode); never over the network. They get no
+# FILE_CREATE_PIPE_INSTANCE (the 0x4 bit, which GENERIC_WRITE would include on a pipe), so no ordinary program can
+# add a rogue server instance of this pipe while the service runs (audit finding SV-A05).
+# 0x12018b = FILE_GENERIC_READ | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES
+PIPE_SDDL = "D:P(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12018b;;;AU)"
 WATCH_INTERVAL = 15
+MAX_CLIENTS = 32  # simultaneous connections to the pipe
 HEARTBEAT_STALE = 300
 RESTART_LIMIT = 3
 RESTART_WINDOW = 600
@@ -184,6 +188,25 @@ class WindowsApplier(servicecore.SystemApplier):
             self._save_state(st)
         return "removed"
 
+    def install_update(self) -> str:
+        """Download, verify and run the newest signed installer from the protected folder (audit finding SV-A07).
+        Signed-in sessions that have the app open are noted, so the new service reopens it there."""
+        from sentinel_vision import app_update
+
+        def launch(path: Path, args: list[str]) -> None:
+            sessions = _sessions_with_app()
+            (self.root / "relaunch.json").write_text(
+                json.dumps({"time": time.time(), "sessions": sessions}), encoding="utf-8"
+            )
+            subprocess.Popen(  # noqa: S603 - our own verified installer, fixed arguments
+                [str(path), *args], creationflags=0x00000008 | 0x00000200, close_fds=True
+            )
+
+        try:
+            return app_update.service_update(self.root / "updates", launch)
+        except app_update.AppUpdateError as exc:
+            raise servicecore.ServiceError("update_failed", str(exc)) from exc
+
     def status(self) -> dict:
         from sentinel_vision import webshield
 
@@ -224,6 +247,8 @@ class PipeServer:
     def __init__(self, core: servicecore.ServiceCore, stop: threading.Event) -> None:
         self.core = core
         self.stop = stop
+        self._clients = 0
+        self._clients_lock = threading.Lock()
         import win32security
 
         self._sa = win32security.SECURITY_ATTRIBUTES()
@@ -269,7 +294,20 @@ class PipeServer:
             if self.stop.is_set():
                 _close(h)
                 break
-            threading.Thread(target=self._client, args=(h,), name="sv-pipe-client", daemon=True).start()
+            with self._clients_lock:
+                if self._clients >= MAX_CLIENTS:  # audit finding SV-F03
+                    log.warning("too many connections; refusing one")
+                    _close(h)
+                    continue
+                self._clients += 1
+            threading.Thread(target=self._client_counted, args=(h,), name="sv-pipe-client", daemon=True).start()
+
+    def _client_counted(self, h) -> None:
+        try:
+            self._client(h)
+        finally:
+            with self._clients_lock:
+                self._clients -= 1
 
     def _identify(self, h) -> servicecore.Caller:
         import win32api
@@ -371,6 +409,20 @@ class Watchdog:
         self.seen_session: set[tuple[str, int]] = set()
         self._skipped: set[int] = set()
         self._last_state: dict[tuple[str, int], str] = {}
+        self._relaunch = self._load_relaunch()
+
+    def _load_relaunch(self) -> set[int]:
+        """Sessions that had the app open when the service started an update (reopened once, even if starting at
+        sign-in is off)."""
+        marker = self.core.root / "relaunch.json"
+        try:
+            d = json.loads(marker.read_text(encoding="utf-8"))
+            marker.unlink(missing_ok=True)
+            if time.time() - float(d.get("time", 0)) < 1800:
+                return {int(x) for x in d.get("sessions", [])}
+        except (OSError, ValueError, TypeError):
+            pass
+        return set()
 
     def run(self) -> None:
         while not self.stop.wait(WATCH_INTERVAL):
@@ -424,6 +476,13 @@ class Watchdog:
         now = time.time()
         for session, sid in self._sessions():
             key = (sid, session)
+            if session in self._relaunch:
+                self._relaunch.discard(session)
+                if not self._app_pids(session):
+                    log.info("watchdog: reopening the app in session %s after the update", session)
+                    self.seen_session.add(key)
+                    self._launch(session, key, now)
+                    continue
             pol = self.core.policy(sid)
             if not pol:
                 self._state(key, "account has not used Sentinel Vision")
@@ -508,6 +567,22 @@ class Watchdog:
             win32ts.WTSSendMessage(win32ts.WTS_CURRENT_SERVER_HANDLE, session, DISPLAY_NAME, text, 0x40, 60, False)
         except Exception as exc:
             log.info("could not show a message: %s", exc)
+
+
+def _sessions_with_app() -> list[int]:
+    """Signed-in sessions in which the app is running now."""
+    import psutil
+    import win32ts
+
+    target = os.path.normcase(str(install_dir() / APP_EXE))
+    out = set()
+    for p in psutil.process_iter(["pid", "exe"]):
+        try:
+            if p.info["exe"] and os.path.normcase(p.info["exe"]) == target and _alive(p.info["pid"]):
+                out.add(int(win32ts.ProcessIdToSessionId(p.info["pid"])))
+        except Exception as exc:  # process ended while we looked
+            log.debug("process check skipped: %s", exc)
+    return sorted(out)
 
 
 def _alive(pid: int) -> bool:

@@ -71,6 +71,21 @@ def file_kind(head: bytes, name: str) -> str:
 
 
 # ---------------------------------------------------------------------------------------------- locations
+def windows_dir() -> str:
+    """The Windows folder, asked from Windows itself: environment variables such as WINDIR can be set by any program
+    running as the user, which would make its own folder count as "the operating system" (audit finding SV-F04)."""
+    try:
+        import ctypes
+
+        buf = ctypes.create_unicode_buffer(260)
+        n = ctypes.windll.kernel32.GetSystemWindowsDirectoryW(buf, 260)  # type: ignore[attr-defined]
+        if 0 < n < 260:
+            return buf.value
+    except Exception:
+        pass
+    return r"C:\Windows"
+
+
 def _norm(p: str) -> str:
     return os.path.normcase(os.path.abspath(p))
 

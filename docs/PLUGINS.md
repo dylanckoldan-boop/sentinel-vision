@@ -26,6 +26,7 @@ QWidget. `sentinel_vision.plugin_api.PluginPage` is a ready-made descriptor:
 ```python
 from sentinel_vision.plugin_api import PluginPage
 
+
 def register():
     return [PluginPage("my_plugin", "My plugin", lambda ctx: MyWidget(ctx))]
 ```
@@ -75,7 +76,8 @@ The file is **moved**: encrypted into the quarantine exactly like an automatic d
 by chunk; on Windows into the protection service's storage) and the original deleted. On success the command prints
 only the new item's id and exits with 0. On any problem it exits with 2 and nothing changes. The reason is shown as
 the threat name and the source (default `agent-guard`) as the engine, `external:<source>`. The item can be restored
-or deleted like any other (`quarantine restore ID`, `quarantine delete ID`).
+or deleted like any other (`quarantine restore ID`, `quarantine delete ID`). On Windows with the protection service,
+restoring needs administrator approval (since 0.5.0): `quarantine restore` shows the administrator prompt itself.
 
 Refused: anything that isn't an existing regular file (folders, links), operating-system files, and Sentinel Vision's
 own program or data.
@@ -100,6 +102,14 @@ the service is installed but not reachable, the command fails instead of writing
 
 On macOS, Linux and the portable build, the same format is kept in your own data folder. It is tamper-*evident*
 (`verify` shows edits) but not tamper-proof.
+
+### Limits (Windows protection service, since 0.5.0)
+
+Requests that change something (appends, quarantine additions, vault versions) are limited to 50 per second per
+account, with bursts of up to 100, so a companion program can append at least 10 records a second indefinitely. Over
+the limit the service answers `too_many` with how long to wait; the client library waits (up to 2 seconds) and
+retries by itself. At most 32 programs can be connected at once, and at most 4 file transfers (4 GB in total) can be
+in progress per account; a transfer idle for 15 minutes is dropped. Unknown requests or arguments are refused.
 
 From Python: `sentinel_vision.plugin_api.plugin_log(name)` returns an object with `append(record)`,
 `read(since, limit)`, `verify()` and `protected`. `sentinel_vision.config.plugin_dir(name)` is a private working

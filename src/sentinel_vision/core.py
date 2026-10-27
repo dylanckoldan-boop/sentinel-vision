@@ -21,7 +21,7 @@ from sentinel_vision.ransomware import RansomwareShield
 from sentinel_vision.realtime import RealtimeProtection
 from sentinel_vision.reputation import ReputationService
 from sentinel_vision.scanner import Scanner, ScanSummary
-from sentinel_vision.servicecore import ServiceError, apply_policy, policy_from_settings
+from sentinel_vision.servicecore import ServiceError, apply_policy, policy_from_settings, weakened
 from sentinel_vision.updater import Updater
 from sentinel_vision.vault import RollbackVault
 from sentinel_vision.webshield import DomainIntel
@@ -58,12 +58,21 @@ class Sentinel:
         # Windows: the protection service keeps the vault, quarantine and protection settings out of reach of
         # other programs. Elsewhere (or if it isn't installed) they live in the user's own data folder.
         self.service = service if service is not None else (service_client.connect() if use_service else None)
+        # Degraded: the protection service is installed but can't be reached (stopped, blocked, or something else is
+        # answering on its pipe). Then nothing protected is kept in the user's own folder and protection can't be
+        # reduced; the app keeps trying to reach the service (audit finding SV-A01).
+        self.degraded = self.service is None and service is None and use_service and service_client.service_installed()
+        self.degraded_reason = service_client.last_problem if self.degraded else ""
+        self._floor: dict = {}
         self.migrated: tuple[int, int] = (0, 0)
         self._events_since = time.time()
         self._events_after: int | None = None  # sequence number of the last service event seen
         if self.service is not None:
             self._attach_service()
             self.quarantine = service_client.RemoteQuarantine(self.service)
+        elif self.degraded:
+            self._enter_degraded()
+            self.quarantine = service_client.OfflineQuarantine()
         else:
             self.quarantine = Quarantine()
         self.scanner = Scanner(s, self.db, self.quarantine)
@@ -77,8 +86,11 @@ class Sentinel:
         self.behavior = BehaviorMonitor(self.scanner, s)
         if self.service is not None:
             self.vault = service_client.RemoteVault(self.service)
+        elif self.degraded:
+            self.vault = service_client.OfflineVault()
         else:
             self.vault = RollbackVault(max_total_mb=s.vault_max_mb, keep_versions=s.vault_keep_versions)
+        self.vault.allowed_roots = lambda: self.settings.ransomware_folders
         self.ransomware = RansomwareShield(s, self.db, self.vault)
         self.drives = DriveWatcher(self._on_drive)
         self.privacy = PrivacyMonitor(self._on_device_use)
@@ -91,6 +103,55 @@ class Sentinel:
         self._rw_key: tuple | None = None
 
     # ------------------------------------------------------------------ protection service
+    def _enter_degraded(self) -> None:
+        """Every protected setting at least as strong as the defaults (the local settings file could have been
+        changed by another program), no plugins, and that floor enforced until the service is back."""
+        from sentinel_vision.servicecore import strengthen
+
+        floor = policy_from_settings(Settings())
+        floor["exclusions"], floor["approved_plugins"] = [], []
+        present = {f.name for f in self.settings.feeds}
+        floor["enabled_feeds"] = [n for n in floor["enabled_feeds"] if n in present]
+        self._floor = strengthen(policy_from_settings(self.settings), floor)
+        apply_policy(self.settings, self._floor)
+        self.settings.firewall_block = True
+        why = (
+            "another program is answering in its place"
+            if self.degraded_reason == "impostor"
+            else "it isn't running or can't be reached"
+        )
+        self.db.log_event(
+            "service",
+            f"Protection service unreachable ({why}): tamper protection is off; protection stays at full strength",
+            "danger" if self.degraded_reason == "impostor" else "warning",
+        )
+
+    def try_reconnect(self) -> bool:
+        """In degraded mode: reach the service again and switch everything to its protected storage. True when
+        connected (also when it already was)."""
+        if not self.degraded:
+            return True
+        t = service_client.connect(timeout=2, wait_for_start=False)
+        if t is None:
+            return False
+        self.service = t
+        self._attach_service()
+        self.quarantine = service_client.RemoteQuarantine(t)
+        self.scanner.quarantine = self.quarantine
+        self.vault = service_client.RemoteVault(t)
+        self.vault.allowed_roots = lambda: self.settings.ransomware_folders
+        self.ransomware.vault = self.vault
+        self.degraded, self.degraded_reason, self._floor = False, "", {}
+        self.db.log_event("service", "Protection service reachable again: tamper protection is back on", "info")
+        self.alert(
+            "Tamper protection restored", "Sentinel Vision is connected to its protection service again.", "info"
+        )
+        try:
+            self.apply_runtime()
+        except Exception:
+            logging.getLogger(__name__).exception("re-applying settings after reconnecting failed")
+        return True
+
     def _global_from_settings(self) -> dict:
         return {
             "webshield_block_hosts": self.settings.webshield_block_hosts,
@@ -105,16 +166,6 @@ class Sentinel:
             self._events_after = t.call("events", {"after": 1 << 62})[0].get("last")
         except Exception:
             self._events_after = None  # an older service: fall back to times
-        try:
-            self.migrated = service_client.migrate_local_data(t, sub_dir("vault"), sub_dir("quarantine"))
-            if any(self.migrated):
-                self.db.log_event(
-                    "service",
-                    f"Moved {self.migrated[0]} document version(s) and {self.migrated[1]} quarantined file(s) "
-                    "into the protected storage",
-                )
-        except Exception:
-            log.exception("moving local data into the protection service failed (kept locally)")
         r = t.call("policy.get")[0]
         if not r.get("policy"):
             from sentinel_vision import autostart
@@ -134,6 +185,17 @@ class Sentinel:
         g = r.get("global") or {}
         self.settings.webshield_block_hosts = bool(g.get("webshield_block_hosts", False))
         self.settings.firewall_block = bool(g.get("firewall_block", False))
+        # after the account's policy exists: the vault only accepts files inside its protected folders
+        try:
+            self.migrated = service_client.migrate_local_data(t, sub_dir("vault"), sub_dir("quarantine"))
+            if any(self.migrated):
+                self.db.log_event(
+                    "service",
+                    f"Moved {self.migrated[0]} document version(s) and {self.migrated[1]} quarantined file(s) "
+                    "into the protected storage",
+                )
+        except Exception:
+            log.exception("moving local data into the protection service failed (kept locally)")
 
     def save_settings(self) -> None:
         """Save settings. With the protection service, a change that weakens protection raises
@@ -148,10 +210,19 @@ class Sentinel:
                 if exc.code == "elevation_required":
                     raise ProtectionChangeNeedsAdmin(list(exc.extra.get("fields", [])), str(exc)) from exc
                 raise
+        elif self.degraded:
+            weaker = weakened(self._floor, policy_from_settings(self.settings))
+            if weaker:
+                raise ProtectionChangeNeedsAdmin(
+                    weaker, "the protection service isn't reachable, so protection can't be reduced right now"
+                )
         self.settings.save()
 
     def reload_protected_settings(self) -> None:
         """Undo unsaved changes to protected settings (after the user declined the administrator prompt)."""
+        if self.degraded:
+            apply_policy(self.settings, self._floor)
+            return
         if self.service is not None:
             r = self.service.call("policy.get")[0]
             apply_policy(self.settings, r.get("policy") or {})

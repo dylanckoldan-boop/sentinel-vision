@@ -64,6 +64,15 @@ def request_pause(sentinel) -> bool:
     return _run_elevated(["protect-pause", "--sid", sid, "--session", str(current_session())]) == APPLIED
 
 
+def request_release(sentinel, item_id: str) -> bool:
+    """Ask for administrator approval to restore one quarantined item (it may then be opened once, by this
+    account, within two minutes). The elevated helper only approves; the app writes the file as the user."""
+    if sentinel.service is None:
+        return False
+    sid = sentinel.service.call("ping")[0]["sid"]
+    return _run_elevated(["protect-release", "--sid", sid, "--id", str(item_id)]) == APPLIED
+
+
 def current_session() -> int:
     if sys.platform != "win32":
         return -1
@@ -95,7 +104,8 @@ def confirm(title: str, text: str) -> bool:  # pragma: no cover - interactive
 
 
 def privileged_main(argv: list[str], confirm_fn=confirm, transport=None) -> int:
-    """Entry point for ``protect-apply FILE`` and ``protect-pause --sid S --session N`` (run elevated)."""
+    """Entry point for ``protect-apply FILE``, ``protect-pause --sid S --session N`` and
+    ``protect-release --sid S --id ITEM`` (run elevated)."""
     from sentinel_vision import service_client
     from sentinel_vision.servicecore import ServiceError
 
@@ -107,6 +117,20 @@ def privileged_main(argv: list[str], confirm_fn=confirm, transport=None) -> int:
         if not t.call("ping")[0].get("elevated"):
             print("administrator approval is required", file=sys.stderr)
             return FAILED
+        if argv[0] == "protect-release":
+            sid = argv[argv.index("--sid") + 1]
+            item_id = argv[argv.index("--id") + 1]
+            # the item belongs to the account that asked (the approving administrator may be another account)
+            item = t.call("quarantine.get", {"id": item_id, "sid": sid})[0]["item"]
+            where, threat = item["original_path"], f"\nDetected as: {item['threat']}"
+            if not confirm_fn(
+                "Restore a file from quarantine?",
+                f"Sentinel Vision quarantined this file because it looked dangerous:\n\n{where}{threat}\n\n"
+                "Only continue if you are sure it is safe and you asked to restore it yourself.",
+            ):
+                return DECLINED
+            t.call("quarantine.release", {"sid": sid, "id": item_id})
+            return APPLIED
         if argv[0] == "protect-pause":
             sid = argv[argv.index("--sid") + 1]
             session = int(argv[argv.index("--session") + 1])

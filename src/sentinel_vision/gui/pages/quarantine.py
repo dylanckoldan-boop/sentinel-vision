@@ -74,10 +74,22 @@ class QuarantinePage(Page):
             dest = QFileDialog.getExistingDirectory(self, "Restore to folder")
             if not dest:
                 return
+        from sentinel_vision.quarantine import QuarantineNeedsApproval
+
         errors, done = [], []
         for item in sel:
             try:
-                p = self.s.quarantine.restore(item.id, dest)
+                try:
+                    p = self.s.quarantine.restore(item.id, dest)
+                except QuarantineNeedsApproval:
+                    # Windows protection service: restoring needs administrator approval (one prompt per file)
+                    from sentinel_vision.gui.pages.base import wait_for
+                    from sentinel_vision.protect import request_release
+
+                    if not wait_for(lambda i=item: request_release(self.s, i.id)):
+                        errors.append(f"{item.original_path}: administrator approval was not given")
+                        continue
+                    p = self.s.quarantine.restore(item.id, dest)
                 done.append(str(p))
                 self.s.settings.exclusions.append(str(p))  # don't immediately re-quarantine it
                 self.s.db.log_event("quarantine", f"Restored {item.threat} to {p}", "warning")

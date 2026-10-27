@@ -3,12 +3,13 @@
 Everything Sentinel Vision writes lives under one data directory:
 
 * the user's platform data dir (``platformdirs``) by default, or
-* ``$SENTINEL_VISION_HOME`` when set (portable installs, tests, CI).
+* ``$SENTINEL_VISION_HOME`` when set and running from source (tests, CI, development); installed builds ignore it.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import tempfile
@@ -18,13 +19,14 @@ from pathlib import Path
 
 from platformdirs import user_data_dir
 
-from sentinel_vision import APP_ID
+from sentinel_vision import APP_ID, schema
 
 # --------------------------------------------------------------------------- paths
 
 
 def data_dir() -> Path:
-    override = os.environ.get("SENTINEL_VISION_HOME")
+    # a developer switch, ignored in installed builds where any program could set it (audit finding SV-F04)
+    override = os.environ.get("SENTINEL_VISION_HOME") if not getattr(sys, "frozen", False) else None
     base = Path(override) if override else Path(user_data_dir(APP_ID, appauthor=False))
     base.mkdir(parents=True, exist_ok=True)
     _restrict(base)
@@ -306,6 +308,13 @@ class Settings:
                 and not (isinstance(default, float) and isinstance(v, int))
             ):
                 continue  # ignore wrongly typed values
+            if isinstance(default, bool) and type(v) is not bool:
+                continue
+            if isinstance(v, float) and not math.isfinite(v):
+                continue  # NaN or infinity
+            if k in schema.INT_RANGES or k in schema.LIST_FIELDS:
+                if not schema.valid(k, v):
+                    continue  # out of range (e.g. a 0 MB size limit would skip every file): keep the default
             if k == "abusech_auth_key":
                 from sentinel_vision import secretbox
 

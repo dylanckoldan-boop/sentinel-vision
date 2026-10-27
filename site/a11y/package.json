@@ -1,0 +1,9 @@
+{
+  "name": "sentinel-vision-site-a11y",
+  "private": true,
+  "description": "Accessibility checker used by site/check_a11y.py. Installed with `npm ci` from the lockfile (audit finding SV-B02).",
+  "license": "MIT",
+  "dependencies": {
+    "axe-core": "4.10.3"
+  }
+}

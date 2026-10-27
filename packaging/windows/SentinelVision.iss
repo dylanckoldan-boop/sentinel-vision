@@ -10,7 +10,9 @@
 ;
 ; Command-line switches understood by the installer (besides Inno's /SILENT, /VERYSILENT):
 ;   /TASKS="autostart,desktopicon,addtopath"   choose options in silent installs
-;   /RELAUNCH=1                                start the app after a silent install (used by self-update)
+;   /RELAUNCH=1                                start the app after a silent install
+;   /SERVICEUPDATE=1                           update run by the protection service (no user steps; the service's
+;                                              watchdog starts the app again for signed-in users)
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -116,14 +118,18 @@ begin
   Result := WizardSilent() and (ExpandConstant('{param:RELAUNCH|0}') = '1');
 end;
 
-procedure KillImage(const Image: String);
+procedure KillImage(const Image: String; const Tree: Boolean);
 var
   ResultCode, I: Integer;
+  Args: String;
 begin
   { taskkill exits with 128 once no process with that image name is left; keep going until then. }
+  Args := '/F /IM ' + Image;
+  if Tree then
+    Args := '/F /T /IM ' + Image;
   for I := 1 to 40 do
   begin
-    if not Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM ' + Image, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    if not Exec(ExpandConstant('{sys}\taskkill.exe'), Args, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
       exit;
     if ResultCode = 128 then
       exit;
@@ -161,7 +167,8 @@ begin
       break;
     Sleep(500);
   end;
-  KillImage('{#SvcExe}');
+  { never its children: during an update started by the service, this installer is one of them }
+  KillImage('{#SvcExe}', False);
 end;
 
 procedure StopRunningApp();
@@ -169,8 +176,8 @@ begin
   { The service would restart the app, so it goes first. The app keeps running in the tray, so a normal close
     request would only hide it: end it so files can be replaced. }
   StopService();
-  KillImage('{#AppExe}');
-  KillImage('{#CliExe}');
+  KillImage('{#AppExe}', True);
+  KillImage('{#CliExe}', True);
   Sleep(1000);
 end;
 
@@ -217,6 +224,11 @@ end;
 
 var
   HadUserInstall: Boolean;
+
+function ServiceUpdate(): Boolean;
+begin
+  Result := WizardSilent() and (ExpandConstant('{param:SERVICEUPDATE|0}') = '1');
+end;
 
 function InitializeSetup(): Boolean;
 begin
@@ -329,11 +341,14 @@ begin
       RemoveFromPath(AppDir);
     { versions before 0.4 wrote a machine-wide start-at-sign-in value; the app now keeps a per-user one }
     RegDeleteValue(HKEY_LOCAL_MACHINE, '{#RunKey}', '{#RunValue}');
-    MigrateUserInstall();
+    { an update run by the protection service (as SYSTEM) has no signed-in user: per-user steps are skipped, and
+      each user's start-at-sign-in choice stays as it is }
+    if not ServiceUpdate() then
+      MigrateUserInstall();
     InstallService();
     WaitForService();
     { an upgrade from a per-user install keeps that user's own start-at-sign-in choice (handled by the clean-up) }
-    if not HadUserInstall then
+    if not HadUserInstall and not ServiceUpdate() then
       SetAutostart(WizardIsTaskSelected('autostart'));
   end;
 end;

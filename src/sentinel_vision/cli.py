@@ -147,7 +147,18 @@ def cmd_quarantine(sv: Sentinel, args) -> int:
             print(f"{i.id}  {time.strftime('%Y-%m-%d %H:%M', time.localtime(i.ts))}  {i.threat:<40} {i.original_path}")
         print(_c(DIM, f"{len(items)} item(s)"))
     elif args.action == "restore":
-        print(f"Restored to {q.restore(args.id, args.to)}")
+        from sentinel_vision.quarantine import QuarantineNeedsApproval
+
+        try:
+            print(f"Restored to {q.restore(args.id, args.to)}")
+        except QuarantineNeedsApproval:
+            from sentinel_vision.protect import request_release
+
+            print("Restoring from quarantine needs administrator approval; confirm in the Windows prompt.")
+            if not request_release(sv, args.id):
+                print("error: administrator approval was not given; nothing was restored", file=sys.stderr)
+                return 2
+            print(f"Restored to {q.restore(args.id, args.to)}")
     elif args.action == "delete":
         q.delete(args.id)
         print("Deleted.")
@@ -491,6 +502,31 @@ def cmd_shred(_sv: Sentinel, args) -> int:
     return 1 if failed else 0
 
 
+def cmd_release_key(_sv, args) -> int:
+    """For the project owner: create a new release-signing key, or list the keys this build trusts."""
+    from pathlib import Path
+
+    from sentinel_vision.pqsign import PRIVATE_KEY_FILE, PUBLIC_KEY_FILE, write_new_key
+    from sentinel_vision.trust import release_keys
+
+    if args.action == "list":
+        for k in release_keys():
+            print(f"trusted release key {k.key_id}")
+        return 0
+    folder = Path(args.folder).expanduser()
+    if (folder / PRIVATE_KEY_FILE).exists():
+        print(f"{folder / PRIVATE_KEY_FILE} already exists; choose an empty folder", file=sys.stderr)
+        return 2
+    pub = write_new_key(folder)
+    print(_c(GRN, f"New release-signing key {pub.key_id}"))
+    print(f"  private key: {folder / PRIVATE_KEY_FILE}")
+    print("    SECRET. Paste its contents into the SV_SIGNING_KEY secret only when the rotation steps say so,")
+    print("    then delete the file with: sentinel-vision-cli shred <file>")
+    print(f"  public key:  {folder / PUBLIC_KEY_FILE}  (safe to share; it gets pinned in trust.py)")
+    print("Steps: docs/CODE_SIGNING.md, 'Rotating the release key'.")
+    return 0
+
+
 def cmd_verify_release(_sv: Sentinel, args) -> int:
     """Verify downloaded release files against the post-quantum signed checksum list."""
     import hashlib
@@ -565,8 +601,11 @@ def cmd_service(sv: Sentinel, args) -> int:
         print("The protection service is not running (it is part of the Windows installer).")
         return 1
     if getattr(args, "self_test", False):
+        from sentinel_vision import webshield
         from sentinel_vision.servicecore import ServiceError, policy_from_settings
 
+        problem = webshield.elevation_problem(webshield._cli_base()[0])
+        print("Administrator prompts: OK" if not problem else f"Administrator prompts: refused ({problem})")
         if sv.service.call("ping")[0].get("elevated"):
             print("Running with administrator rights: changes are allowed, so the refusal can't be tested here.")
             print("Run this again from a normal (not elevated) window.")
@@ -669,6 +708,9 @@ def build_parser() -> argparse.ArgumentParser:
     svc.add_argument("--self-test", action="store_true", help="check that other programs can't weaken protection")
     vr = sub.add_parser("verify-release", help="verify downloaded release files (post-quantum signature + SHA-256)")
     vr.add_argument("folder", nargs="?", default=".")
+    rk = sub.add_parser("release-key", help="for the project owner: create a release-signing key, list trusted keys")
+    rk.add_argument("action", choices=["new", "list"])
+    rk.add_argument("folder", nargs="?", default=".", help="with 'new': an empty folder for the key files")
     sh = sub.add_parser("shred", help="securely delete files or folders")
     sh.add_argument("paths", nargs="+")
     sh.add_argument("--yes", action="store_true", help="don't ask for confirmation")
@@ -688,7 +730,7 @@ def _safe_console() -> None:
 def main(argv: list[str] | None = None) -> int:
     _safe_console()
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] in ("protect-apply", "protect-pause"):
+    if argv and argv[0] in ("protect-apply", "protect-pause", "protect-release"):
         # elevated helper started after the user approved Windows' administrator prompt
         from sentinel_vision.protect import privileged_main
 
@@ -710,6 +752,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.command == "plugin-log":
         return cmd_plugin_log(None, args)  # needs no scanner or definitions
+    if args.command == "release-key":
+        return cmd_release_key(None, args)
     try:
         sv = Sentinel()
         handler = {

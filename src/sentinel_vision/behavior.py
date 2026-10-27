@@ -284,7 +284,9 @@ def persistence_snapshot() -> dict[str, str]:
         if programdata:
             folders.append(Path(programdata) / "Microsoft/Windows/Start Menu/Programs/StartUp")
         snap.update(_file_entries(folders))
-        windir = os.environ.get("WINDIR", r"C:\Windows")
+        from sentinel_vision.policy import windows_dir
+
+        windir = windows_dir()
         snap.update(_file_entries([Path(windir) / "System32" / "Tasks"], recursive=True))
         return snap
     if sys.platform == "darwin":

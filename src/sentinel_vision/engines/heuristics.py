@@ -215,7 +215,7 @@ class HeuristicEngine(Engine):
     # ------------------------------------------------------------------ checks
     def _filename(self, name: str, lname: str, ext: str, head: bytes) -> list[Indicator]:
         out: list[Indicator] = []
-        if "‮" in name:
+        if "\u202e" in name:
             out.append(Indicator(70, "Masquerade", "Right-to-left override character hides the real extension"))
         is_exe = head[:2] == b"MZ" or head[:4] == b"\x7fELF"
         parts = lname.split(".")

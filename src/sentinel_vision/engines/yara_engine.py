@@ -89,6 +89,10 @@ class YaraEngine(Engine):
         return f"{self._rule_count:,} rules{extra}"
 
     @property
+    def rule_count(self) -> int:
+        return self._rule_count
+
+    @property
     def skipped_files(self) -> list[str]:
         return list(self._bad_files)
 

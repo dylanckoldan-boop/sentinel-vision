@@ -54,7 +54,7 @@ updating, uninstalling and troubleshooting.
 |---|---|
 | **4 detection engines** | Hash blocklists (MD5/SHA-1/SHA-256) · YARA (bundled rules + [YARA Forge](https://yarahq.github.io/) + your own) · ClamAV (via `clamd` or `clamscan`) · static heuristics for unknown threats, with Windows Authenticode and catalog-signature checks to avoid false alarms on signed software |
 | **Calm, honest results** | Threats are separated from *items to review* (machine-generated rule hints, dual-use tools, findings in installed programs' folders). Automatic quarantine only for exact known-malware matches, or strong matches on programs in your own folders — never caches, app databases or installed software. Audited weekly against everyday Windows apps (Steam, Office, Adobe Reader, VLC, …). |
-| **Tamper protection (Windows)** | The *Sentinel Vision Protection* service keeps the rollback vault, quarantine and protection settings in a folder only Windows and administrators can open. Other programs can't delete them, and turning protection off, adding exclusions or quitting needs your administrator approval. It restarts the app if something closes it, and tells you. |
+| **Tamper protection (Windows)** | The *Sentinel Vision Protection* service keeps the rollback vault, quarantine and protection settings in a folder only Windows and administrators can open. Programs running with your rights can't delete them, and turning protection off, adding exclusions, restoring a quarantined file or quitting needs your administrator approval. It restarts the app if something closes it, and tells you. |
 | **Real-time protection** | Watches Downloads, Desktop, Documents, temp and autostart folders; new or changed files are scanned the moment they finish writing and known malware is quarantined automatically |
 | **Behavior monitoring** | Every new program is checked for attack techniques (malicious-document shells, download-and-run PowerShell, ransomware deleting backups, LOLBin abuse, reverse shells, miners) and its executable is scanned; confirmed malware is ended and quarantined. Auto-start locations are watched for new persistence. |
 | **Ransomware shield & rollback** | Hidden decoy files plus fast *and* slow encryption detection — including ransomware that leaves the start of each file intact — catch ransomware in the act and freeze the program responsible; every good version of your documents is kept in an encrypted vault so you can roll back to before the attack |
@@ -151,8 +151,9 @@ Security software is a high-value target, so Sentinel Vision is built defensivel
 * **Encrypted quarantine.** AES-256-GCM with a per-install key stored owner-only; per-chunk nonces and authenticated position/final-chunk flags detect tampering, reordering and truncation; restores are verified against the original SHA-256 and never overwrite existing files.
 * **Post-quantum signed updates.** Release checksums are signed with ML-DSA-65 (NIST FIPS 204) and Ed25519; both must verify, and the app refuses unsigned or older installers. Stored data uses AES-256-GCM, which keeps 128-bit security even against quantum computers. Details in [the comparison](docs/COMPARISON.md#post-quantum-design).
 * **Careful automatic actions.** Only signature-confirmed malware and the actual backup-deletion tools are ended automatically; heuristic and technique alerts are report-only by default. Pattern matches on validly signed programs, caches and app databases, installed programs' folders, and anything short of an exact match on operating-system files, are reported rather than removed.
-* **Tamper protection (Windows).** Installed in Program Files (only administrators can change it). The protection service (LocalSystem) keeps each account's vault, quarantine and protection settings in a folder with a protected SYSTEM/Administrators-only ACL that it re-checks (and refuses to follow links in) at every start; each account only reaches its own data; the service only stores and returns bytes and never writes into users' folders; weakening changes need an elevated caller; its named pipe rejects remote clients, and the app only talks to a pipe owned by a Windows service (session 0). Machine-wide blocking uses lists the service downloads itself, never lists supplied by other programs.
+* **Tamper protection (Windows).** Installed in Program Files (only administrators can change it). The protection service (LocalSystem) keeps each account's vault, quarantine and protection settings in a folder with a protected SYSTEM/Administrators-only ACL that it re-checks (and refuses to follow links in) at every start; each account only reaches its own data; the service only stores and returns bytes and never writes into users' folders; weakening changes and restoring a quarantined file need an elevated caller; the vault only keeps files from your protected folders, is rate-limited and never evicts recent versions to make room for new ones; its named pipe rejects remote clients, and the app only talks to a pipe owned by a Windows service (session 0). Machine-wide blocking uses lists the service downloads itself, never lists supplied by other programs, and never blocks local networks, ranges wider than /16, DNS resolvers or the feed publishers. App updates are installed by the service after it verifies the signed checksums, so no administrator prompt is needed.
 * **Plugins only with consent.** Plugin pages load only from an administrator-only folder (installed Windows app) after a permission check, and only after the user allowed each one — with the service, that needs administrator approval. A broken plugin is skipped, never fatal. Details in [docs/PLUGINS.md](docs/PLUGINS.md).
+* **Fails safe when the service is down (Windows).** If the protection service is installed but not running, the app shows a red warning, keeps protection settings at least at their defaults, refuses weakening changes, and retries every 15 seconds. It never falls back to storing protected data in your own folder.
 * **No shell, ever.** External tools (`netsh`, `iptables`, `clamscan`, `freshclam`, `taskkill`) are called with argument lists; IPs are validated before any firewall rule is built; private/loopback addresses can't be blocked.
 * **Private by default.** No telemetry. Your files never leave your machine — only hash/IP feeds and update metadata are downloaded. Data lives in an owner-only directory.
 * **Self-protection from false positives.** The app's own install and data directories are excluded so its signature files are never "detected".
@@ -171,6 +172,11 @@ replacement for an OS-integrated antivirus — keep Microsoft Defender / XProtec
 * Tamper protection stops malware running with **your** rights. Malware that already has administrator rights can still
   stop the service — only kernel-level protection (which needs Microsoft's signature) prevents that. On macOS and
   Linux there is no protection service yet: data and settings live in your own folder.
+* While the Windows protection service is stopped, files are still scanned and threats reported, but nothing can be
+  quarantined and no new rollback versions are kept until it's running again.
+* Restoring a file from quarantine on Windows needs administrator approval, even if you put it there yourself.
+* The file shredder overwrites a file's contents, but SSDs and cloud-synced folders can keep older copies. Use disk
+  encryption for full protection.
 * Network throughput is system-wide; per-process bandwidth isn't available portably yet.
 * System-wide website blocking uses the hosts file and blocks whole host names (not individual pages). Browsers set to their own "secure DNS only" mode can skip it — the Security checkup tells you if one is.
 * The rollback vault lives on the same disk as your documents. On Windows other programs can't reach it, but a disk failure or ransomware with administrator rights could still destroy it. Keep an offline/cloud backup too.
@@ -193,7 +199,7 @@ Inside: `settings.json`, `sentinel.db` (hashes, history, cache), `quarantine/`, 
 ```bash
 git clone https://github.com/dylanckoldan-boop/sentinel-vision && cd sentinel-vision
 pip install -e ".[dev]"
-pytest                 # 130+ tests: engines, crypto, ransomware, web shield, checkup, updates, CLI, GUI
+pytest                 # 270+ tests: engines, crypto, ransomware, web shield, checkup, updates, CLI, GUI
 ruff check src tests tools
 ```
 
@@ -224,6 +230,19 @@ tools/          false-positive audit, icon generator
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) — rules, heuristics, feeds and the [roadmap](ROADMAP.md) items are especially welcome.
+
+## How this was built
+
+Sentinel Vision is designed and maintained by Dylan Koldan. Most of its code and documentation was written with AI
+assistance (Anthropic's Claude), under his direction: he decides what it should do and what is released. Every change
+must pass the automated tests on Windows, macOS and Linux before release, including full install, upgrade and
+uninstall tests on a clean Windows machine, and a false-positive audit scans clean Windows, macOS and Linux computers
+every week. Dylan is responsible for the project and its releases.
+
+Using AI to write it doesn't change the licence: like all MIT-licensed software, Sentinel Vision comes with no
+warranty. The program itself contains no machine-learning model and sends nothing to AI services; detections come from
+hash lists, YARA rules, ClamAV signatures and fixed heuristics. Anthropic and Claude are trademarks of Anthropic; this
+project is not affiliated with or endorsed by Anthropic.
 
 ## Credits
 

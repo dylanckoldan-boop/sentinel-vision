@@ -28,6 +28,10 @@ def test_every_default_feed_downloads_and_parses(sentinel):
         assert by_name[must].ok, report
     assert sentinel.domains.count() > 1000
     assert sentinel.intel.count > 100
+    # the website promises "more than 5,000 YARA rules" (docs/CLAIMS.md)
+    sentinel.scanner.reload_signatures()
+    yara_engine = next(e for e in sentinel.scanner.engines if e.name == "yara")
+    assert yara_engine.rule_count > 5000, yara_engine.status()
 
 
 def test_pwned_passwords_api():

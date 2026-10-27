@@ -47,3 +47,24 @@ You will get an acknowledgement within 72 hours. We aim to release a fix for con
 * Keep definitions updated (automatic every 6 hours by default).
 * Run `clamd` for ClamAV coverage.
 * Keep your operating system's built-in protection (Microsoft Defender, XProtect) enabled — Sentinel Vision is designed to complement it.
+
+## Accepted risks
+
+### The website is hosted on GitHub Pages (audit finding SV-B01)
+
+**Risk.** The website at `dylanckoldan-boop.github.io/sentinel-vision` is served by GitHub. Someone who took over the
+owner's GitHub account, or GitHub itself, could change the download instructions or the fingerprint shown.
+
+**Why it's accepted.** The site is static HTML with no scripts, cookies, forms or third-party requests, so there is
+nothing on it to steal and no server of ours to break into. The downloads themselves are not on the site: they're
+GitHub release files whose `SHA256SUMS.txt` is signed with the project's post-quantum key, and the app refuses any
+update that doesn't verify against the keys built into it, whatever the website says. A separate host would add a
+second account to protect without removing the dependency on GitHub, where the code and releases live.
+
+**What limits it.** The site build only shows a fingerprint after verifying the release's signature
+(`site/release_check.py`); after each deployment a job checks that every live page matches what was built
+(`.github/workflows/pages.yml`); changes to `/site/` and `/.github/` need the owner's review (`.github/CODEOWNERS`);
+the owner account uses two-factor authentication ([docs/REPO_SETTINGS.md](docs/REPO_SETTINGS.md)).
+
+**Review.** Accepted 2026-10-27 by the project owner. Reviewed again by 2027-04-27, or sooner if the site gains
+scripts, forms or downloads of its own.

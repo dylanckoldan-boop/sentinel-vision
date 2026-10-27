@@ -57,6 +57,17 @@ run it before proposing new rules or heuristics. `python tools/make_icons.py` re
    smoke-tests macOS and Linux, and only then publishes the GitHub Release with `SHA256SUMS.txt`.
    Run it without a tag (*Actions → Release → Run workflow*) to test a build without publishing.
 
+## AI-assisted contributions
+
+AI tools are welcome; much of Sentinel Vision itself was written with them (see *How this was built* in the README).
+
+* Say so in the pull request (the template has a checkbox), and describe what the tool did.
+* You are responsible for every line you submit, exactly as if you had typed it: understand it, test it, and make sure
+  you have the right to contribute it.
+* Never paste secrets (keys, tokens), private data or live malware into an AI tool.
+* The same rules apply as for any change: tests are required, and CI must pass on Windows, macOS and Linux.
+* A change to anything the website or README promises must keep [docs/CLAIMS.md](docs/CLAIMS.md) true.
+
 ## Pull requests
 
 * Keep PRs focused; describe *what* and *why*.

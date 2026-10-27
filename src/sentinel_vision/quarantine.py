@@ -33,6 +33,14 @@ class QuarantineError(RuntimeError):
     pass
 
 
+class QuarantineNeedsApproval(QuarantineError):
+    """Restoring this item needs administrator approval (Windows protection service, audit finding SV-A04)."""
+
+    def __init__(self, item_id: str, message: str) -> None:
+        super().__init__(message)
+        self.item_id = item_id
+
+
 @dataclass
 class QuarantineItem:
     id: str

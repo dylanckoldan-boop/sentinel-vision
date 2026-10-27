@@ -1,0 +1,10 @@
+# Audit finding SV-B03: changes to what builds, signs and publishes Sentinel Vision, to the website, and to the
+# pinned release keys need the owner's review. Enforced by the branch rule in docs/REPO_SETTINGS.md.
+/.github/                         @dylanckoldan-boop
+/site/                            @dylanckoldan-boop
+/packaging/                       @dylanckoldan-boop
+/requirements/                    @dylanckoldan-boop
+/tools/                           @dylanckoldan-boop
+/src/sentinel_vision/trust.py     @dylanckoldan-boop
+/src/sentinel_vision/pqsign.py    @dylanckoldan-boop
+/src/sentinel_vision/app_update.py @dylanckoldan-boop

@@ -73,3 +73,26 @@ def test_verify_release_cli(tmp_path, monkeypatch, capsys):
     (tmp_path / "SHA256SUMS.txt").write_bytes(sums.replace(b"  ", b" *"))  # checksum list altered
     assert cli.main(["verify-release", str(tmp_path)]) == 1
     assert "SIGNATURE INVALID" in capsys.readouterr().out
+
+
+def test_release_key_command_writes_a_private_key_once_and_a_shareable_public_key(tmp_path, capsys):
+    """Audit finding SV-L03: the owner creates the next release key on their own computer."""
+    import stat
+    import sys
+
+    from sentinel_vision import cli
+    from sentinel_vision.pqsign import PRIVATE_KEY_FILE, PUBLIC_KEY_FILE, PrivateKey, PublicKey
+
+    folder = tmp_path / "keys"
+    assert cli.main(["release-key", "new", str(folder)]) == 0
+    private = PrivateKey.from_b64((folder / PRIVATE_KEY_FILE).read_text())
+    key_id, pub_b64 = (folder / PUBLIC_KEY_FILE).read_text().splitlines()
+    assert PublicKey.from_b64(pub_b64) == private.public_key()
+    assert key_id == f"key id: {private.public_key().key_id}"
+    assert private.to_b64() not in capsys.readouterr().out  # the secret is never printed
+    if sys.platform != "win32":
+        assert stat.S_IMODE((folder / PRIVATE_KEY_FILE).stat().st_mode) == 0o600
+    assert cli.main(["release-key", "new", str(folder)]) == 2  # never overwrites a key
+    assert (folder / PRIVATE_KEY_FILE).read_text().strip() == private.to_b64()
+    assert cli.main(["release-key", "list"]) == 0
+    assert "trusted release key 0a5b8ebb9da90203" in capsys.readouterr().out

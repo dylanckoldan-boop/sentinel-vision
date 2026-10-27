@@ -32,8 +32,12 @@ UPLOAD_CHUNK = 4 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------------------------- framing
+def _no_constants(name: str):
+    raise ServiceError("bad_request", f"{name} is not allowed")
+
+
 def encode(header: dict, payload: bytes = b"") -> bytes:
-    h = json.dumps(header).encode("utf-8")
+    h = json.dumps(header, allow_nan=False).encode("utf-8")  # NaN and Infinity are not JSON (SV-A03)
     return struct.pack(">I", len(h)) + h + struct.pack(">I", len(payload)) + payload
 
 
@@ -41,7 +45,12 @@ def decode(read_exact) -> tuple[dict, bytes]:
     (hl,) = struct.unpack(">I", read_exact(4))
     if hl > 1024 * 1024:
         raise ServiceError("protocol", "header too large")
-    header = json.loads(read_exact(hl).decode("utf-8"))
+    try:
+        header = json.loads(read_exact(hl).decode("utf-8"), parse_constant=_no_constants)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ServiceError("bad_request", "request is not valid JSON") from exc
+    if type(header) is not dict:
+        raise ServiceError("bad_request", "request must be an object")
     (pl,) = struct.unpack(">I", read_exact(4))
     if pl > MAX_FRAME:
         raise ServiceError("protocol", "payload too large")
@@ -62,6 +71,19 @@ def _raise_for(reply: dict) -> None:
 
 
 # ---------------------------------------------------------------------------------------------- transports
+def _with_retry(fn):
+    """Requests refused as "too_many" with a short retry_after are retried for up to five seconds."""
+    deadline = time.time() + 5
+    while True:
+        try:
+            return fn()
+        except ServiceError as exc:
+            wait = float(exc.extra.get("retry_after", 0) or 0)
+            if exc.code != "too_many" or not 0 < wait <= 2 or time.time() + wait > deadline:
+                raise
+            time.sleep(wait)
+
+
 class LocalTransport:
     """In-process transport (tests, and platforms without the service)."""
 
@@ -69,7 +91,7 @@ class LocalTransport:
         self.core, self.caller = core, caller
 
     def call(self, op: str, args: dict | None = None, payload: bytes = b"") -> tuple[dict, bytes]:
-        result, data = self.core.handle(self.caller, op, args or {}, payload)
+        result, data = _with_retry(lambda: self.core.handle(self.caller, op, args or {}, payload))
         # round-trip through JSON like the real pipe does, so tests see the same types
         return json.loads(json.dumps(result)), data
 
@@ -89,7 +111,8 @@ class PipeTransport:  # pragma: no cover - Windows only, exercised by the Window
             try:
                 self.h = win32file.CreateFile(
                     PIPE_NAME,
-                    win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+                    # exactly what the pipe grants signed-in users: read, write data, set the read mode
+                    win32file.GENERIC_READ | 0x0002 | 0x0100,  # FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES
                     0,
                     None,
                     win32file.OPEN_EXISTING,
@@ -126,11 +149,14 @@ class PipeTransport:  # pragma: no cover - Windows only, exercised by the Window
     def call(self, op: str, args: dict | None = None, payload: bytes = b"") -> tuple[dict, bytes]:
         import win32file
 
-        with self._lock:
-            win32file.WriteFile(self.h, encode({"op": op, "args": args or {}}, payload))
-            reply, data = decode(self._read_exact)
-        _raise_for(reply)
-        return reply.get("result", {}), data
+        def once():
+            with self._lock:
+                win32file.WriteFile(self.h, encode({"op": op, "args": args or {}}, payload))
+                reply, data = decode(self._read_exact)
+            _raise_for(reply)
+            return reply.get("result", {}), data
+
+        return _with_retry(once)
 
     def close(self) -> None:
         import win32file
@@ -177,19 +203,117 @@ def service_installed() -> bool:
     )
 
 
-def connect(timeout: float = 2.0):
-    """A transport to the protection service, or None when it isn't installed/running (or not on Windows)."""
-    if sys.platform != "win32" or os.environ.get("SENTINEL_VISION_NO_SERVICE") == "1":
+# why the last connect() failed ("" when it succeeded); "impostor" when a pipe not owned by a Windows service answered
+last_problem = ""
+
+
+def developer_mode() -> bool:
+    """Developer switches (environment variables) only work when running from source, never in an installed build:
+    any program running as the user can set environment variables (audit finding SV-F04)."""
+    return not getattr(sys, "frozen", False)
+
+
+def connect(timeout: float = 2.0, wait_for_start: bool = True):
+    """A transport to the protection service, or None when it isn't installed/running (or not on Windows).
+
+    When the service is installed but this returns None, the app runs in *degraded* mode (see core.Sentinel), never
+    in the unprotected local mode."""
+    global last_problem
+    last_problem = ""
+    if sys.platform != "win32":
         return None
-    if service_installed():
+    if developer_mode() and os.environ.get("SENTINEL_VISION_NO_SERVICE") == "1":
+        return None
+    if service_installed() and wait_for_start:
         timeout = max(timeout, 20.0)  # installed: it may still be starting (sign-in, just after an update)
     try:
         t = ResilientTransport(timeout)
         t.call("ping")
         return t
     except Exception as exc:
-        log.info("protection service not available: %s", exc)
+        last_problem = "impostor" if "not owned by a Windows service" in str(exc) else str(exc)
+        log.warning("protection service not available: %s", exc)
         return None
+
+
+# ---------------------------------------------------------------------------------------------- degraded mode
+OFFLINE_MESSAGE = (
+    "the protection service isn't reachable, so this can't be done right now (nothing is stored outside the "
+    "protected storage)"
+)
+
+
+class OfflineQuarantine:
+    """Stands in for the quarantine while the installed protection service can't be reached. Nothing is ever
+    written to the user's own folder, where other programs could read or change it (audit finding SV-A01)."""
+
+    def add(self, path, threat: str, engine: str):
+        raise QuarantineError(OFFLINE_MESSAGE)
+
+    def add_external(self, path, reason: str = "", source: str = "agent-guard") -> str:
+        raise QuarantineError(OFFLINE_MESSAGE)
+
+    def add_stream(self, fh, original_path: str, threat: str, engine: str):
+        raise QuarantineError(OFFLINE_MESSAGE)
+
+    def list(self) -> list:
+        return []
+
+    def get(self, item_id: str):
+        raise QuarantineError(OFFLINE_MESSAGE)
+
+    def iter_plain(self, item_id: str):
+        raise QuarantineError(OFFLINE_MESSAGE)
+
+    def restore(self, item_id: str, dest=None, overwrite: bool = False):
+        raise QuarantineError(OFFLINE_MESSAGE)
+
+    def delete(self, item_id: str) -> None:
+        raise QuarantineError(OFFLINE_MESSAGE)
+
+    def total_size(self) -> int:
+        return 0
+
+
+class OfflineVault(VaultFiles):
+    """Stands in for the rollback vault while the protection service can't be reached: stores nothing."""
+
+    def __init__(self) -> None:
+        self.max_file = 50 * 1024 * 1024
+        self.max_total = 0
+
+    def eligible(self, path) -> bool:
+        return False
+
+    def snapshot(self, path, force: bool = False):
+        return None
+
+    def store(self, key: str, data: bytes, mtime: float, force: bool = False):
+        return None
+
+    def read(self, version_id: int):
+        raise VaultError(OFFLINE_MESSAGE)
+
+    def rollback_plan(self, since: float, folder_key: str = "") -> list:
+        return []
+
+    def versions(self, path) -> list:
+        return []
+
+    def files(self, limit: int = 5000) -> list:
+        return []
+
+    def stats(self) -> tuple[int, int, int]:
+        return 0, 0, 0
+
+    def used_bytes(self) -> int:
+        return 0
+
+    def restore(self, version_id: int, dest=None):
+        raise VaultError(OFFLINE_MESSAGE)
+
+    def close(self) -> None:
+        pass
 
 
 # ---------------------------------------------------------------------------------------------- vault
@@ -218,7 +342,11 @@ class RemoteVault(VaultFiles):
     def store(self, key: str, data: bytes, mtime: float, force: bool = False) -> Version | None:
         if len(data) > self.max_file:
             return None
-        r, _ = self.t.call("vault.store", {"key": key, "mtime": mtime, "force": force}, data)
+        # a forced copy (kept just before a restore overwrites a file) uses "preserve", which never evicts anything
+        try:
+            r, _ = self.t.call("vault.preserve" if force else "vault.store", {"key": key, "mtime": mtime}, data)
+        except ServiceError as exc:
+            raise VaultError(str(exc)) from exc
         return self._v(r["version"])
 
     def read(self, version_id: int) -> tuple[Version, bytes]:
@@ -307,11 +435,18 @@ class RemoteQuarantine:
         except ServiceError as exc:
             raise QuarantineError(str(exc)) from exc
 
-    def iter_plain(self, item_id: str):
+    def _open(self, item_id: str) -> dict:
+        from sentinel_vision.quarantine import QuarantineNeedsApproval
+
         try:
-            r = self.t.call("quarantine.open", {"id": item_id})[0]
+            return self.t.call("quarantine.open", {"id": item_id})[0]
         except ServiceError as exc:
+            if exc.code == "elevation_required":
+                raise QuarantineNeedsApproval(item_id, str(exc)) from exc
             raise QuarantineError(str(exc)) from exc
+
+    def iter_plain(self, item_id: str, opened: dict | None = None):
+        r = opened or self._open(item_id)
         token, expected = r["token"], r["item"]["sha256"]
         sha, offset = hashlib.sha256(), 0
         try:
@@ -336,7 +471,8 @@ class RemoteQuarantine:
 
         item = self.get(item_id)
         target = restore_target(item, dest, overwrite)
-        write_restored(self.iter_plain(item_id), target)
+        opened = self._open(item_id)  # before writing anything: may need administrator approval
+        write_restored(self.iter_plain(item_id, opened), target)
         self.delete(item_id)
         return target
 
@@ -351,6 +487,14 @@ class RemoteQuarantine:
 
 
 # ---------------------------------------------------------------------------------------------- migration
+def _unused_name(path: Path) -> Path:
+    candidate, n = path, 1
+    while candidate.exists():
+        n += 1
+        candidate = path.with_name(f"{path.name}-{n}")
+    return candidate
+
+
 def migrate_local_data(transport, local_vault_root: Path, local_quarantine_root: Path) -> tuple[int, int]:
     """Move a vault and quarantine kept in the user's own folder (older versions) into the protected service.
     Idempotent: each item is removed locally only after the service confirmed it. Returns (versions, items)."""
@@ -360,17 +504,31 @@ def migrate_local_data(transport, local_vault_root: Path, local_quarantine_root:
     moved_v = moved_q = 0
     if (local_vault_root / "vault.key").exists():
         lv = RollbackVault(local_vault_root, max_file_mb=2048, max_total_mb=1 << 20)
+        skipped = 0
         try:
             for v in lv.all_versions():
                 try:
                     _, data = lv.read(v.id)
                 except VaultError:
                     continue
-                transport.call("vault.store", {"key": v.path, "mtime": v.mtime, "force": True}, data)
+                try:
+                    transport.call("vault.preserve", {"key": v.path, "mtime": v.mtime}, data)
+                except ServiceError as exc:  # e.g. a file outside today's protected folders: skipped
+                    log.info("version of %s not moved: %s", v.path, exc)
+                    skipped += 1
+                    continue
                 moved_v += 1
         finally:
             lv.close()
-        _remove_tree(local_vault_root)
+        if skipped:
+            # never destroy versions the service didn't take: keep them, under a name that isn't migrated again
+            kept = _unused_name(local_vault_root.with_name(local_vault_root.name + "-not-moved"))
+            local_vault_root.rename(kept)
+            log.warning(
+                "%d document version(s) were not moved into protected storage; they are kept in %s", skipped, kept
+            )
+        else:
+            _remove_tree(local_vault_root)
     if (local_quarantine_root / "vault.key").exists():
         lq = Quarantine(local_quarantine_root)
         rq = RemoteQuarantine(transport)

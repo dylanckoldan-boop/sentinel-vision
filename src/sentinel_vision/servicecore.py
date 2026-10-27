@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -28,7 +29,17 @@ from pathlib import Path
 
 from sentinel_vision import __version__
 from sentinel_vision.quarantine import Quarantine, QuarantineError
-from sentinel_vision.vault import RollbackVault, VaultError
+from sentinel_vision.schema import (
+    BOOL_ON,
+    GLOBAL_BOOL_ON,
+    LIST_GROW,
+    LIST_KEEP,
+    NUM_HIGHER_IS_STRONGER,
+    NUM_LOWER_IS_STRONGER,
+    SchemaError,
+)
+from sentinel_vision.schema import check as check_field
+from sentinel_vision.vault import RollbackVault, VaultError, VaultRefused
 
 log = logging.getLogger("sentinel_vision.service")
 
@@ -36,22 +47,24 @@ PROTOCOL = 1
 MAX_UPLOAD = 2 * 1024 * 1024 * 1024  # largest file accepted into quarantine
 MAX_FRAME = 64 * 1024 * 1024  # largest single payload (vault versions are at most a few dozen MB)
 READ_CHUNK = 8 * 1024 * 1024
+# Resource limits per account (audit finding SV-F03)
+MAX_TRANSFERS = 4
+MAX_IN_TRANSIT = 4 * 1024**3
+TRANSFER_IDLE = 15 * 60
+RATE_PER_SECOND = 50  # changing requests, with bursts up to RATE_BURST
+RATE_BURST = 100
+REFRESH_EVERY = 10 * 60
+MUTATING = frozenset(
+    {"pause", "resume", "policy.set", "system.refresh", "plugin.append", "vault.store", "vault.preserve",
+     "quarantine.begin", "quarantine.chunk", "quarantine.commit", "quarantine.abort", "quarantine.delete",
+     "quarantine.release", "update.install"}
+)  # fmt: skip
+RELEASE_SECONDS = 120  # how long an administrator's approval to restore one quarantined item lasts
 SID_RE = re.compile(r"^S-1(-\d{1,10}){1,15}$")
 
 # ---------------------------------------------------------------------------------------------- policy
-# Which settings protect the user, and which direction counts as "weaker".
-BOOL_ON = (
-    "realtime_enabled", "behavior_enabled", "behavior_kill_malicious", "behavior_block_ransomware",
-    "ransomware_enabled", "ransomware_auto_suspend", "network_enabled", "webshield_enabled", "auto_quarantine",
-    "hash_enabled", "yara_enabled", "clamav_enabled", "heuristics_enabled", "usb_autoscan", "privacy_monitor",
-    "netsec_enabled", "scan_archives", "check_app_updates", "schedule_quick_daily", "schedule_full_weekly",
-    "schedule_memory_scan", "keep_running",
-)  # fmt: skip
-LIST_KEEP = ("ransomware_folders", "watch_paths", "enabled_feeds")  # removing an entry weakens
-LIST_GROW = ("exclusions", "approved_plugins")  # adding an entry weakens
-NUM_LOWER_IS_STRONGER = ("heuristic_threshold",)
-NUM_HIGHER_IS_STRONGER = ("max_file_size_mb", "vault_max_mb", "vault_keep_versions")
-GLOBAL_BOOL_ON = ("webshield_block_hosts", "firewall_block")  # machine-wide
+# Which settings protect the user (and their allowed values) are defined in schema.py; "weaker" is decided here.
+
 LABELS = {
     "realtime_enabled": "real-time file protection",
     "behavior_enabled": "behavior monitoring",
@@ -75,6 +88,18 @@ LABELS = {
 POLICY_FIELDS = (
     BOOL_ON + LIST_KEEP + LIST_GROW + NUM_LOWER_IS_STRONGER + NUM_HIGHER_IS_STRONGER + ("auto_update_hours",)
 )
+
+
+def _no_constants(name: str):
+    raise ValueError(f"{name} is not allowed")
+
+
+def _valid_field(name: str, value) -> bool:
+    try:
+        check_field(name, value)
+        return True
+    except SchemaError:
+        return False
 
 
 def label(name: str) -> str:
@@ -110,6 +135,27 @@ def weakened(old: dict, new: dict) -> list[str]:
     return out
 
 
+def strengthen(policy: dict, floor: dict) -> dict:
+    """``policy`` with every field at least as strong as in ``floor`` (stronger choices in ``policy`` are kept)."""
+    out = dict(policy)
+    for k, fv in floor.items():
+        pv = policy.get(k, fv)
+        if k in BOOL_ON or k in GLOBAL_BOOL_ON:
+            out[k] = bool(pv) or bool(fv)
+        elif k in LIST_KEEP:
+            out[k] = list(dict.fromkeys([*fv, *pv]))
+        elif k in LIST_GROW:
+            keep = set(_norm_list(fv))
+            out[k] = [x for x in pv if _norm_list([x])[0] in keep]
+        elif k in NUM_LOWER_IS_STRONGER:
+            out[k] = min(pv, fv)
+        elif k in NUM_HIGHER_IS_STRONGER:
+            out[k] = max(pv, fv)
+        elif k == "auto_update_hours":
+            out[k] = fv if (pv == 0 and fv > 0) or (fv > 0 and pv > fv) else pv
+    return out
+
+
 def policy_from_settings(settings) -> dict:
     d = {k: getattr(settings, k) for k in POLICY_FIELDS if hasattr(settings, k)}
     d["enabled_feeds"] = sorted(f.name for f in getattr(settings, "feeds", []) if f.enabled)
@@ -125,6 +171,116 @@ def apply_policy(settings, policy: dict) -> None:
                 f.enabled = f.name in enabled
         elif hasattr(settings, k):
             setattr(settings, k, v)
+
+
+# ---------------------------------------------------------------------------------------------- request schema
+# Every request is checked against its schema before it runs (audit finding SV-F01): only the listed arguments,
+# each of the right type and size. Anything else is refused with "bad_request" and changes nothing.
+MAX_PATH_CHARS = 32_767
+HEX32_RE = re.compile(r"^[0-9a-f]{32}$")
+HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _int(lo: int, hi: int):
+    def v(x):
+        return type(x) is int and lo <= x <= hi
+
+    return v
+
+
+def _num(lo: float, hi: float):
+    def v(x):
+        return type(x) in (int, float) and math.isfinite(x) and lo <= x <= hi
+
+    return v
+
+
+def _text(max_chars: int, allow_empty: bool = True):
+    def v(x):
+        return type(x) is str and (allow_empty or x) and len(x) <= max_chars and "\0" not in x
+
+    return v
+
+
+def _match(rx):
+    return lambda x: type(x) is str and bool(rx.match(x))
+
+
+def _is_bool(x):
+    return type(x) is bool
+
+
+def _is_dict(x):
+    return type(x) is dict
+
+
+_SID = _match(SID_RE)
+_TOKEN = _match(HEX32_RE)
+_ID = _int(1, 2**62)
+_PATH = _text(MAX_PATH_CHARS, allow_empty=False)
+_TIME = _num(0, 1e11)
+SCHEMAS: dict[str, dict] = {
+    "ping": {}, "status": {}, "heartbeat": {}, "resume": {}, "system.refresh": {},
+    "events": {"after": _int(0, 2**62), "since": _TIME},
+    "pause": {"sid": _SID, "session": _int(0, 65_535)},
+    "policy.get": {"sid": _SID},
+    "policy.set": {"sid": _SID, "policy": _is_dict, "global": _is_dict},
+    "plugin.append": {"name": _text(40), "record": _is_dict},
+    "plugin.read": {"name": _text(40), "sid": _SID, "since": _int(0, 2**62), "limit": _int(1, 1000),
+                    "verify": _is_bool},
+    "vault.store": {"key": _PATH, "mtime": _TIME},
+    "vault.preserve": {"key": _PATH, "mtime": _TIME},
+    "vault.read": {"id": _ID}, "vault.get": {"id": _ID},
+    "vault.versions": {"key": _PATH}, "vault.files": {"limit": _int(1, 5000)}, "vault.stats": {},
+    "vault.plan": {"since": _TIME, "folder": _text(MAX_PATH_CHARS)},
+    "quarantine.begin": {"original_path": _PATH, "threat": _text(200), "engine": _text(200)},
+    "quarantine.chunk": {"token": _TOKEN}, "quarantine.commit": {"token": _TOKEN, "sha256": _match(HEX64_RE)},
+    "quarantine.abort": {"token": _TOKEN}, "quarantine.list": {},
+    "quarantine.get": {"id": _TOKEN, "sid": _SID},
+    "quarantine.open": {"id": _TOKEN}, "quarantine.delete": {"id": _TOKEN},
+    "quarantine.release": {"sid": _SID, "id": _TOKEN},
+    "quarantine.read": {"token": _TOKEN, "offset": _int(0, 2**42), "length": _int(1, READ_CHUNK)},
+    "quarantine.close": {"token": _TOKEN},
+    "update.install": {"version": _text(32)},
+}  # fmt: skip
+REQUIRED = {
+    "pause": ("sid", "session"), "plugin.append": ("name", "record"), "plugin.read": ("name",),
+    "vault.store": ("key",), "vault.preserve": ("key",), "vault.read": ("id",), "vault.get": ("id",),
+    "vault.versions": ("key",), "vault.plan": ("since",), "quarantine.chunk": ("token",),
+    "quarantine.commit": ("token",), "quarantine.abort": ("token",), "quarantine.get": ("id",),
+    "quarantine.open": ("id",), "quarantine.delete": ("id",), "quarantine.read": ("token",),
+    "quarantine.release": ("sid", "id"),
+    "quarantine.close": ("token",),
+}  # fmt: skip
+
+
+def check_request(op: str, args) -> None:
+    schema = SCHEMAS.get(op)
+    if schema is None:
+        raise ServiceError("unknown_op", f"unknown request {op!r}")
+    if type(args) is not dict:
+        raise ServiceError("bad_request", "arguments must be an object")
+    for k, v in args.items():
+        if k not in schema:
+            raise ServiceError("bad_request", f"{op}: unknown argument {k!r}")
+        if not schema[k](v):
+            raise ServiceError("bad_request", f"{op}: invalid value for {k!r}")
+    missing = [k for k in REQUIRED.get(op, ()) if k not in args]
+    if missing:
+        raise ServiceError("bad_request", f"{op}: missing {', '.join(missing)}")
+
+
+def check_policy(policy: dict, global_: dict) -> None:
+    for k, v in policy.items():
+        if k not in POLICY_FIELDS:
+            raise ServiceError("bad_request", f"unknown setting {k!r}")
+        try:
+            check_field(k, v)
+        except SchemaError as exc:
+            raise ServiceError("bad_request", str(exc)) from exc
+    for k, v in global_.items():
+        if k not in GLOBAL_BOOL_ON or type(v) is not bool:
+            raise ServiceError("bad_request", f"invalid machine-wide setting {k!r}")
 
 
 # ---------------------------------------------------------------------------------------------- core
@@ -178,6 +334,9 @@ class SystemApplier:
     def status(self) -> dict:
         return {}
 
+    def install_update(self) -> str:
+        raise ServiceError("unsupported", "updates are installed by the Windows protection service")
+
 
 class ServiceCore:
     def __init__(self, root: Path, applier: SystemApplier | None = None) -> None:
@@ -191,6 +350,10 @@ class ServiceCore:
         self._vaults: dict[str, RollbackVault] = {}
         self._quarantines: dict[str, Quarantine] = {}
         self._plugin_logs: dict = {}
+        self._last_refusal: dict = {}
+        self._released: dict[tuple[str, str], float] = {}
+        self._buckets: dict[str, list[float]] = {}  # sid -> [tokens, last time]
+        self._last_refresh: dict[str, float] = {}
         self._transfers: dict[str, _Transfer] = {}
         self.events: list[Event] = []
         self._event_seq = 0
@@ -209,9 +372,13 @@ class ServiceCore:
     def policy(self, sid: str) -> dict:
         p = self._user_dir(sid) / "policy.json"
         try:
-            return json.loads(p.read_text(encoding="utf-8"))
+            raw = json.loads(p.read_text(encoding="utf-8"), parse_constant=_no_constants)
         except (OSError, ValueError):
             return {}
+        if type(raw) is not dict:
+            return {}
+        # only valid values count (a damaged or older file never breaks the vault or weakens anything)
+        return {k: v for k, v in raw.items() if k in POLICY_FIELDS and _valid_field(k, v)}
 
     def _save_policy(self, sid: str, policy: dict) -> None:
         p = self._user_dir(sid) / "policy.json"
@@ -271,10 +438,14 @@ class ServiceCore:
 
     # ------------------------------------------------------------------ dispatch
     def handle(self, caller: Caller, op: str, args: dict, payload: bytes = b"") -> tuple[dict, bytes]:
-        fn = getattr(self, "op_" + op.replace(".", "_"), None)
+        args = {} if args is None else args
+        check_request(str(op), args)
+        if op in MUTATING:
+            self._rate(caller.sid)
+        fn = getattr(self, "op_" + str(op).replace(".", "_"), None)
         if fn is None:
             raise ServiceError("unknown_op", f"unknown request {op!r}")
-        out = fn(caller, args or {}, payload)
+        out = fn(caller, args, payload)
         if isinstance(out, tuple):
             return out
         return out, b""
@@ -336,8 +507,9 @@ class ServiceCore:
         sid = str(a.get("sid", c.sid))
         if sid != c.sid and not c.elevated:
             raise ServiceError("denied", "another account's settings")
-        new = {k: v for k, v in (a.get("policy") or {}).items() if k in POLICY_FIELDS}
-        new_global = {k: bool(v) for k, v in (a.get("global") or {}).items() if k in GLOBAL_BOOL_ON}
+        check_policy(a.get("policy") or {}, a.get("global") or {})  # before anything is compared (SV-A03)
+        new = dict(a.get("policy") or {})
+        new_global = dict(a.get("global") or {})
         old = self.policy(sid)
         old_global = self.global_policy()
         first_time = not old
@@ -383,7 +555,13 @@ class ServiceCore:
                     self._event("*", "system", f"{label(key)} failed: {exc}")
 
     def op_system_refresh(self, c: Caller, a: dict, p: bytes) -> dict:
-        """Re-apply machine-wide blocking from the service's own up-to-date lists (any user may ask)."""
+        """Re-apply machine-wide blocking from the service's own up-to-date lists (any user may ask, at most once
+        every ten minutes)."""
+        now = time.time()
+        with self._lock:
+            if now - self._last_refresh.get(c.sid, 0) < REFRESH_EVERY:
+                raise ServiceError("too_many", "blocking was refreshed less than ten minutes ago")
+            self._last_refresh[c.sid] = now
         g = self.global_policy()
         out = {}
         if g.get("webshield_block_hosts"):
@@ -391,6 +569,24 @@ class ServiceCore:
         if g.get("firewall_block"):
             out["firewall"] = self.applier.apply_firewall()
         return out
+
+    # ------------------------------------------------------------------ updates
+    def op_update_install(self, c: Caller, a: dict, p: bytes) -> dict:
+        """Install the newest signed release (any signed-in user may ask; only newer, signed releases are ever
+        installed, and the service downloads and checks them itself)."""
+        now = time.time()
+        with self._lock:
+            if now - self._last_refresh.get((c.sid, "update"), 0) < REFRESH_EVERY:
+                raise ServiceError("too_many", "an update was started less than ten minutes ago")
+            self._last_refresh[(c.sid, "update")] = now
+        try:
+            version = self.applier.install_update()
+        except ServiceError:
+            raise
+        except Exception as exc:
+            raise ServiceError("update_failed", str(exc)) from exc
+        self._event("*", "changed", f"Updating Sentinel Vision to {version}")
+        return {"version": version}
 
     # ------------------------------------------------------------------ plugin logs (append-only)
     def _plugin_log(self, sid: str, name: str):
@@ -437,9 +633,49 @@ class ServiceCore:
     def _version(v) -> dict | None:
         return asdict(v) if v is not None else None
 
-    def op_vault_store(self, c: Caller, a: dict, p: bytes) -> dict:
-        v = self.vault(c.sid).store(str(a["key"]), p, float(a.get("mtime", 0)), bool(a.get("force")))
+    def _vault_key(self, sid: str, key: str) -> str:
+        """Only normalised absolute paths inside the account's protected folders (audit finding SV-F02): the vault
+        must not hold versions of places a program running as the user picks, such as a Startup folder."""
+        norm = os.path.normcase(os.path.abspath(key))
+        bad = (
+            norm != key
+            or ".." in key.replace("\\", "/").split("/")
+            or key.startswith(("\\\\", "//"))
+            or key[:4] in ("\\\\?\\", "\\\\.\\")
+        )
+        folders = [os.path.normcase(os.path.abspath(f)) for f in self.policy(sid).get("ransomware_folders", [])]
+        inside = any(norm.startswith(f.rstrip(os.sep) + os.sep) for f in folders if f)
+        if bad or not inside:
+            raise ServiceError("bad_request", "the vault only keeps files inside your protected folders")
+        return norm
+
+    def _vault_put(self, c: Caller, a: dict, p: bytes, preserve: bool) -> dict:
+        key = self._vault_key(c.sid, a["key"])
+        try:
+            v = self.vault(c.sid).store(key, p, float(a.get("mtime", 0)), force=preserve, preserve=preserve)
+        except VaultRefused as exc:
+            self._refusal(c.sid, f"The rollback vault refused a new version: {exc}")
+            raise ServiceError("refused", str(exc)) from exc
         return {"version": self._version(v)}
+
+    def op_vault_store(self, c: Caller, a: dict, p: bytes) -> dict:
+        """A new version of a protected document. Content that looks encrypted is never stored this way."""
+        return self._vault_put(c, a, p, preserve=False)
+
+    def op_vault_preserve(self, c: Caller, a: dict, p: bytes) -> dict:
+        """The copy kept just before a restore overwrites a file (stored even if it looks encrypted, so a restore
+        can be undone). It never removes anything to make room."""
+        return self._vault_put(c, a, p, preserve=True)
+
+    def _refusal(self, sid: str, detail: str) -> None:
+        """A refused-event, at most one per ten minutes per account and kind of message."""
+        key = (sid, detail.split(":")[0])
+        now = time.time()
+        with self._lock:
+            if now - self._last_refusal.get(key, 0) < 600:
+                return
+            self._last_refusal[key] = now
+        self._event(sid, "refused", detail)
 
     def op_vault_read(self, c: Caller, a: dict, p: bytes) -> tuple[dict, bytes]:
         try:
@@ -468,7 +704,30 @@ class ServiceCore:
         return {"plan": [list(x) for x in self.vault(c.sid).rollback_plan(float(a["since"]), str(a.get("folder", "")))]}
 
     # ------------------------------------------------------------------ quarantine
+    def _rate(self, sid: str) -> None:
+        """Token bucket per account: RATE_PER_SECOND changing requests, bursts up to RATE_BURST."""
+        now = time.time()
+        with self._lock:
+            tokens, last = self._buckets.get(sid, [float(RATE_BURST), now])
+            tokens = min(float(RATE_BURST), tokens + (now - last) * RATE_PER_SECOND)
+            if tokens < 1:
+                self._buckets[sid] = [tokens, now]
+                raise ServiceError("too_many", "too many requests; try again shortly", retry_after=0.1)
+            self._buckets[sid] = [tokens - 1, now]
+
+    def _expire_transfers(self) -> None:
+        cutoff = time.time() - TRANSFER_IDLE
+        with self._lock:
+            stale = [tok for tok, t in self._transfers.items() if t.ts < cutoff]
+        for tok in stale:
+            self._end_transfer(tok)
+
     def _new_transfer(self, c: Caller, meta: dict) -> str:
+        self._expire_transfers()
+        with self._lock:
+            mine = [t for t in self._transfers.values() if t.sid == c.sid]
+            if len(mine) >= MAX_TRANSFERS:
+                raise ServiceError("too_many", f"at most {MAX_TRANSFERS} transfers at a time")
         token = secrets.token_hex(16)
         path = self.root / "transfers" / token
         path.touch()
@@ -481,6 +740,7 @@ class ServiceCore:
             t = self._transfers.get(str(token))
         if t is None or t.sid != c.sid:
             raise ServiceError("bad_transfer", "unknown transfer")
+        t.ts = time.time()
         return t
 
     def _end_transfer(self, token: str) -> None:
@@ -498,6 +758,10 @@ class ServiceCore:
         if t.size + len(p) > MAX_UPLOAD:
             self._end_transfer(a["token"])
             raise ServiceError("too_large", "file is too large to quarantine")
+        with self._lock:
+            in_transit = sum(x.size for x in self._transfers.values() if x.sid == c.sid)
+        if in_transit + len(p) > MAX_IN_TRANSIT:
+            raise ServiceError("too_large", "too much data in transit; finish other transfers first")
         with open(t.path, "ab") as fh:
             fh.write(p)
         t.size += len(p)
@@ -526,18 +790,46 @@ class ServiceCore:
         return {"items": [asdict(i) for i in self.quarantine(c.sid).list()]}
 
     def op_quarantine_get(self, c: Caller, a: dict, p: bytes) -> dict:
+        sid = str(a.get("sid", c.sid))
+        if sid != c.sid and not c.elevated:
+            raise ServiceError("denied", "another account's quarantine")
         try:
-            return {"item": asdict(self.quarantine(c.sid).get(str(a["id"])))}
+            return {"item": asdict(self.quarantine(sid).get(str(a["id"])))}
         except QuarantineError as exc:
             raise ServiceError("quarantine", str(exc)) from exc
 
+    def op_quarantine_release(self, c: Caller, a: dict, p: bytes) -> dict:
+        """Administrator approval to restore one item: the account may open it once within two minutes. The
+        approval comes from the elevated helper, which never writes files itself (the app restores as the user)."""
+        if not c.elevated:
+            raise ServiceError("elevation_required", "administrator approval is needed to restore from quarantine")
+        sid, item_id = str(a["sid"]), str(a["id"])
+        try:
+            item = self.quarantine(sid).get(item_id)
+        except QuarantineError as exc:
+            raise ServiceError("quarantine", str(exc)) from exc
+        with self._lock:
+            self._released[(sid, item_id)] = time.time() + RELEASE_SECONDS
+        self._event(sid, "changed", f"Restoring {item.original_path} ({item.threat}) from quarantine was approved")
+        return {"ok": True}
+
     def op_quarantine_open(self, c: Caller, a: dict, p: bytes) -> dict:
-        """Decrypt and verify an item into a private transfer file; the client then reads it in chunks."""
+        """Decrypt and verify an item into a private transfer file; the client then reads it in chunks. Only with
+        administrator approval: decrypting quarantined malware weakens protection (audit finding SV-A04)."""
         q = self.quarantine(c.sid)
         try:
             item = q.get(str(a["id"]))
         except QuarantineError as exc:
             raise ServiceError("quarantine", str(exc)) from exc
+        if not c.elevated:
+            with self._lock:
+                until = self._released.pop((c.sid, item.id), 0)
+            if until < time.time():
+                self._refusal(c.sid, f"A program tried to restore {item.original_path} from quarantine without "
+                                     "administrator approval")  # fmt: skip
+                raise ServiceError(
+                    "elevation_required", "administrator approval is needed to restore from quarantine", id=item.id
+                )
         token = self._new_transfer(c, {"id": item.id})
         t = self._transfer(c, token)
         try:
