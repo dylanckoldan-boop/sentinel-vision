@@ -90,6 +90,7 @@ class Sentinel:
             self.vault = service_client.OfflineVault()
         else:
             self.vault = RollbackVault(max_total_mb=s.vault_max_mb, keep_versions=s.vault_keep_versions)
+        self.vault.allowed_roots = lambda: self.settings.ransomware_folders
         self.ransomware = RansomwareShield(s, self.db, self.vault)
         self.drives = DriveWatcher(self._on_drive)
         self.privacy = PrivacyMonitor(self._on_device_use)
@@ -138,6 +139,7 @@ class Sentinel:
         self.quarantine = service_client.RemoteQuarantine(t)
         self.scanner.quarantine = self.quarantine
         self.vault = service_client.RemoteVault(t)
+        self.vault.allowed_roots = lambda: self.settings.ransomware_folders
         self.ransomware.vault = self.vault
         self.degraded, self.degraded_reason, self._floor = False, "", {}
         self.db.log_event("service", "Protection service reachable again: tamper protection is back on", "info")

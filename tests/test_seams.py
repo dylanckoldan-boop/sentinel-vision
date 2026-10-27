@@ -7,7 +7,7 @@ import sys
 import pytest
 
 from sentinel_vision.quarantine import Quarantine, QuarantineError
-from test_servicecore import ALICE, BOB, FakeApplier
+from test_servicecore import ALICE, ALICE_ADMIN, BOB, FakeApplier
 
 
 @pytest.fixture
@@ -47,6 +47,7 @@ def test_add_external_through_the_protected_service(core, tmp_path):
     assert not f.exists()
     assert q.get(item_id).threat == "Sent to quarantine by agent-guard"
     assert [i.id for i in RemoteQuarantine(LocalTransport(core, BOB)).list()] == []  # other accounts can't see it
+    core.handle(ALICE_ADMIN, "quarantine.release", {"sid": ALICE.sid, "id": item_id})  # restoring needs approval
     assert q.restore(item_id).read_bytes() == b"agent payload " * 100
 
 

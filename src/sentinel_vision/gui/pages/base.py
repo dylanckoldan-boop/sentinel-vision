@@ -113,6 +113,24 @@ def commit_settings(parent: QWidget, sentinel: Sentinel, apply: bool = True) -> 
         return ok
 
 
+def wait_for(fn):
+    """Run a blocking call (such as waiting for the Windows administrator prompt) without freezing the window."""
+    import threading
+
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    result: list = []
+    worker = threading.Thread(target=lambda: result.append(fn()), daemon=True)
+    worker.start()
+    loop = QEventLoop()
+    timer = QTimer()
+    timer.timeout.connect(lambda: loop.quit() if not worker.is_alive() else None)
+    timer.start(100)
+    loop.exec()
+    timer.stop()
+    return result[0] if result else None
+
+
 def make_table(model, stretch_col: int | None = None) -> QTableView:
     t = QTableView()
     t.setModel(model)

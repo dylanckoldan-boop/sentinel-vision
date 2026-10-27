@@ -40,7 +40,7 @@ from sentinel_vision.engines import authenticode
 from sentinel_vision.engines.authenticode import Signature
 from sentinel_vision.engines.base import Severity
 from sentinel_vision.scanner import is_system_path
-from sentinel_vision.vault import VERSIONED_EXT, RollbackVault, damaged, extension, sample_file
+from sentinel_vision.vault import VERSIONED_EXT, RollbackVault, VaultError, damaged, extension, sample_file
 
 log = logging.getLogger(__name__)
 
@@ -370,8 +370,11 @@ class RansomwareShield:
                 if self.vault.versions(src) or kind == "modified":
                     self._record_transform(src)
                 return
-            if self.vault.snapshot(src) is not None:
-                self.files_versioned += 1
+            try:
+                if self.vault.snapshot(src) is not None:
+                    self.files_versioned += 1
+            except VaultError as exc:  # refused (vault full of recent versions, or flooding): logged, never fatal
+                log.warning("not versioned: %s (%s)", src, exc)
 
     def _canary_intact(self, path: str) -> bool:
         try:
@@ -559,7 +562,11 @@ class RansomwareShield:
         for _mtime, p in candidates:
             if self._stop.is_set() or budget <= 0:
                 return
-            v = self.vault.snapshot(p)
+            try:
+                v = self.vault.snapshot(p)
+            except VaultError as exc:
+                log.warning("start-up versioning stopped: %s", exc)
+                return
             if v is not None:
                 self.files_versioned += 1
                 budget -= v.size

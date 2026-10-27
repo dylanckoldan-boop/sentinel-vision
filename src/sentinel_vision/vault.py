@@ -11,6 +11,7 @@ bytes…) is never recorded as a "good" version, so an attack can't push the cle
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import secrets
 import sqlite3
@@ -24,6 +25,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sentinel_vision.config import sub_dir
 from sentinel_vision.engines.heuristics import shannon_entropy
 
+log = logging.getLogger(__name__)
 MAGIC = b"SVB1"
 O_BIN = getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0)
 
@@ -156,6 +158,30 @@ class VaultError(RuntimeError):
     pass
 
 
+class VaultRefused(VaultError):
+    """A new version was refused to protect the ones already stored (vault full of young versions, or far more
+    new versions than any person makes: possible flooding by ransomware)."""
+
+
+# Retention (audit finding SV-A02): a flood of junk versions must never push out good ones.
+KEEP_ALL_SECONDS = 24 * 3600  # every version younger than this is kept, whatever happens
+HOURLY_UNTIL = 7 * 24 * 3600  # then one per hour for a week
+DAILY_UNTIL = 30 * 24 * 3600  # then one per day for 30 days (older ones go, except a file's newest version)
+FILE_RATE = 30  # new versions per file per hour
+ACCOUNT_RATE = 2000  # new versions per account (vault) per hour, of files already in the vault
+FIRST_RATE = 50_000  # first versions of files per hour (these can't push anything out; the start-up pass uses them)
+
+
+def _is_link(p: Path) -> bool:
+    """A symbolic link, or on Windows a junction or other reparse point."""
+    try:
+        if p.is_symlink():
+            return True
+        return bool(getattr(os.lstat(p), "st_file_attributes", 0) & 0x400)
+    except OSError:
+        return False
+
+
 class VaultFiles:
     """File-level operations (snapshot, restore, rollback) on top of a storage back end.
 
@@ -206,16 +232,32 @@ class VaultFiles:
             return None
         return self.store(self._key(p), data, st.st_mtime, force)
 
+    # folders a restore to the original place may write into (set by the app: the protected folders); None = any
+    allowed_roots = None
+
     def restore(self, version_id: int, dest: str | Path | None = None) -> Path:
         """Write a stored version back. The file it replaces is kept in the vault first, so a restore can be
-        undone."""
+        undone. Never writes through a link or junction; without a destination the user chose, only inside the
+        protected folders (audit finding SV-F02)."""
         v, data = self.read(version_id)
         target = Path(dest) if dest else Path(v.path)
-        if target.is_dir():
+        if target.is_dir() and not _is_link(target):
             target = target / Path(v.path).name
+        target = Path(os.path.abspath(target))
+        if dest is None and self.allowed_roots is not None:
+            roots = [os.path.normcase(os.path.abspath(r)) for r in self.allowed_roots() if r]
+            norm = os.path.normcase(str(target))
+            if not any(norm.startswith(r.rstrip(os.sep) + os.sep) for r in roots):
+                raise VaultError(f"{target} is outside your protected folders; choose where to restore it instead")
+        for p in [target, *target.parents]:
+            if _is_link(p):
+                raise VaultError(f"{p} is a link or junction, so nothing is restored through it")
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
-            self.snapshot(target, force=True)
+            try:
+                self.snapshot(target, force=True)
+            except VaultError as exc:  # e.g. outside the protected folders, or the vault is full
+                log.warning("current %s not kept before restoring: %s", target, exc)
         tmp = target.with_name(f".{target.name}.svrestore")
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | O_BIN, 0o600)
         with os.fdopen(fd, "wb") as fh:
@@ -278,6 +320,9 @@ class RollbackVault(VaultFiles):
             raise VaultError("vault key is corrupt")
         self._aes = AESGCM(key)
         self._lock = threading.RLock()
+        self._recent: dict[str, list[float]] = {}  # key -> times of new versions in the last hour
+        self._recent_all: list[float] = []
+        self._recent_first: list[float] = []
         self._db = sqlite3.connect(str(self.root / "index.db"), check_same_thread=False, timeout=30)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(SCHEMA)
@@ -322,9 +367,12 @@ class RollbackVault(VaultFiles):
         return data
 
     # ------------------------------------------------------------------ storage
-    def store(self, key: str, data: bytes, mtime: float, force: bool = False) -> Version | None:
+    def store(self, key: str, data: bytes, mtime: float, force: bool = False, preserve: bool = False) -> Version | None:
         """Keep ``data`` as the newest version of ``key`` (a normalised path) unless it is unchanged, too large, or
-        looks encrypted (refused unless ``force``)."""
+        looks encrypted (refused unless ``force``).
+
+        ``preserve`` (the copy kept just before a restore overwrites a file) never removes anything to make room.
+        Raises :class:`VaultRefused` instead of removing young versions (see the retention constants)."""
         if len(data) > self.max_file:
             return None
         suspect = damaged_bytes(data, extension(key))
@@ -337,16 +385,78 @@ class RollbackVault(VaultFiles):
             ).fetchone()
             if last and last[0] == sha:
                 return None
-            self._put_blob(sha, data)
             now = time.time()
+            self._check_rate(key, now, first=last is None)
+            if not self._db.execute("SELECT 1 FROM versions WHERE sha256=? LIMIT 1", (sha,)).fetchone():
+                fits = self.used_bytes() + len(data) <= self.max_total
+                if not fits and (preserve or not self._make_room(len(data), now)):
+                    raise VaultRefused(
+                        "the rollback vault is full of recent versions; this version was not kept (nothing was "
+                        "removed). Raise the vault size limit or check for a program changing many files."
+                    )
+            self._put_blob(sha, data)
             cur = self._db.execute(
                 "INSERT INTO versions(path, sha256, size, mtime, ts, suspect) VALUES (?, ?, ?, ?, ?, ?)",
                 (key, sha, len(data), float(mtime), now, int(suspect)),
             )
             self._db.commit()
+            self._recent.setdefault(key, []).append(now)
+            (self._recent_first if last is None else self._recent_all).append(now)
             vid = int(cur.lastrowid)
-            self._prune(key)
+            if not preserve:
+                self._thin(key, now)
         return Version(vid, key, sha, len(data), float(mtime), now, int(suspect))
+
+    def _check_rate(self, key: str, now: float, first: bool = False) -> None:
+        hour = now - 3600
+        self._recent[key] = recent = [t for t in self._recent.get(key, []) if t > hour]
+        self._recent_all = [t for t in self._recent_all if t > hour]
+        self._recent_first = [t for t in self._recent_first if t > hour]
+        if first:
+            if len(self._recent_first) >= FIRST_RATE:
+                raise VaultRefused(f"more than {FIRST_RATE} new files in an hour (possible vault flooding)")
+            return
+        if len(recent) >= FILE_RATE:
+            raise VaultRefused(f"more than {FILE_RATE} new versions of this file in an hour (possible vault flooding)")
+        if len(self._recent_all) >= ACCOUNT_RATE:
+            raise VaultRefused(f"more than {ACCOUNT_RATE} new versions in an hour (possible vault flooding)")
+
+    def _thin(self, key: str, now: float) -> None:
+        """Age-based retention for one file: everything from the last 24 hours; then the newest version of each
+        hour for a week and of each day for 30 days, at most ``keep_versions`` of those; never the newest one."""
+        rows = self._db.execute("SELECT id, ts FROM versions WHERE path=? ORDER BY ts DESC, id DESC", (key,)).fetchall()
+        drop, buckets, old_kept = [], set(), 0
+        for i, (vid, ts) in enumerate(rows):
+            age = now - ts
+            if i == 0 or age < KEEP_ALL_SECONDS:
+                continue
+            bucket = ("h", int(ts // 3600)) if age < HOURLY_UNTIL else ("d", int(ts // 86400))
+            if age >= DAILY_UNTIL or bucket in buckets or old_kept >= self.keep_versions:
+                drop.append(vid)
+                continue
+            buckets.add(bucket)
+            old_kept += 1
+        if drop:
+            self._db.executemany("DELETE FROM versions WHERE id=?", [(d,) for d in drop])
+            self._db.commit()
+            self._gc()
+
+    def _make_room(self, size: int, now: float) -> bool:
+        """Make room for ``size`` more bytes by removing versions older than 24 hours (suspect ones first, then
+        the oldest), never a file's newest version. False when that isn't enough (young versions are never
+        removed)."""
+        rows = self._db.execute(
+            "SELECT id FROM versions WHERE ts < ? AND id NOT IN (SELECT MAX(id) FROM versions GROUP BY path) "
+            "ORDER BY suspect DESC, ts ASC",
+            (now - KEEP_ALL_SECONDS,),
+        ).fetchall()
+        for (vid,) in rows:
+            if self.used_bytes() + size <= self.max_total:
+                break
+            self._db.execute("DELETE FROM versions WHERE id=?", (vid,))
+        self._db.commit()
+        self._gc()
+        return self.used_bytes() + size <= self.max_total
 
     def read(self, version_id: int) -> tuple[Version, bytes]:
         v = self.get(version_id)
@@ -376,24 +486,14 @@ class RollbackVault(VaultFiles):
         return [Version(*r) for r in rows]
 
     def _prune(self, key: str | None = None) -> None:
+        """Apply retention (after the size limit or the versions setting changed)."""
         with self._lock:
-            if key is not None:
-                self._db.execute(
-                    "DELETE FROM versions WHERE path=? AND id NOT IN "
-                    "(SELECT id FROM versions WHERE path=? ORDER BY ts DESC, id DESC LIMIT ?)",
-                    (key, key, self.keep_versions),
-                )
-            # total size: drop the oldest non-latest versions first
-            while self.used_bytes() > self.max_total:
-                row = self._db.execute(
-                    "SELECT v.id FROM versions v WHERE v.id NOT IN "
-                    "(SELECT MAX(id) FROM versions GROUP BY path) ORDER BY v.ts ASC LIMIT 1"
-                ).fetchone()
-                if not row:
-                    break
-                self._db.execute("DELETE FROM versions WHERE id=?", (row[0],))
-            self._db.commit()
-            self._gc()
+            now = time.time()
+            keys = [key] if key else [r[0] for r in self._db.execute("SELECT DISTINCT path FROM versions")]
+            for k in keys:
+                self._thin(k, now)
+            if self.used_bytes() > self.max_total:
+                self._make_room(0, now)
 
     def _gc(self) -> None:
         live = {r[0] for r in self._db.execute("SELECT DISTINCT sha256 FROM versions")}

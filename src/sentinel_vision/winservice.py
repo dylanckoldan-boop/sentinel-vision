@@ -43,6 +43,7 @@ DATA_SDDL = "O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
 # 0x12018b = FILE_GENERIC_READ | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES
 PIPE_SDDL = "D:P(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12018b;;;AU)"
 WATCH_INTERVAL = 15
+MAX_CLIENTS = 32  # simultaneous connections to the pipe
 HEARTBEAT_STALE = 300
 RESTART_LIMIT = 3
 RESTART_WINDOW = 600
@@ -227,6 +228,8 @@ class PipeServer:
     def __init__(self, core: servicecore.ServiceCore, stop: threading.Event) -> None:
         self.core = core
         self.stop = stop
+        self._clients = 0
+        self._clients_lock = threading.Lock()
         import win32security
 
         self._sa = win32security.SECURITY_ATTRIBUTES()
@@ -272,7 +275,20 @@ class PipeServer:
             if self.stop.is_set():
                 _close(h)
                 break
-            threading.Thread(target=self._client, args=(h,), name="sv-pipe-client", daemon=True).start()
+            with self._clients_lock:
+                if self._clients >= MAX_CLIENTS:  # audit finding SV-F03
+                    log.warning("too many connections; refusing one")
+                    _close(h)
+                    continue
+                self._clients += 1
+            threading.Thread(target=self._client_counted, args=(h,), name="sv-pipe-client", daemon=True).start()
+
+    def _client_counted(self, h) -> None:
+        try:
+            self._client(h)
+        finally:
+            with self._clients_lock:
+                self._clients -= 1
 
     def _identify(self, h) -> servicecore.Caller:
         import win32api

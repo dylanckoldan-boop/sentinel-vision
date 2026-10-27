@@ -147,7 +147,18 @@ def cmd_quarantine(sv: Sentinel, args) -> int:
             print(f"{i.id}  {time.strftime('%Y-%m-%d %H:%M', time.localtime(i.ts))}  {i.threat:<40} {i.original_path}")
         print(_c(DIM, f"{len(items)} item(s)"))
     elif args.action == "restore":
-        print(f"Restored to {q.restore(args.id, args.to)}")
+        from sentinel_vision.quarantine import QuarantineNeedsApproval
+
+        try:
+            print(f"Restored to {q.restore(args.id, args.to)}")
+        except QuarantineNeedsApproval:
+            from sentinel_vision.protect import request_release
+
+            print("Restoring from quarantine needs administrator approval; confirm in the Windows prompt.")
+            if not request_release(sv, args.id):
+                print("error: administrator approval was not given; nothing was restored", file=sys.stderr)
+                return 2
+            print(f"Restored to {q.restore(args.id, args.to)}")
     elif args.action == "delete":
         q.delete(args.id)
         print("Deleted.")
@@ -688,7 +699,7 @@ def _safe_console() -> None:
 def main(argv: list[str] | None = None) -> int:
     _safe_console()
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] in ("protect-apply", "protect-pause"):
+    if argv and argv[0] in ("protect-apply", "protect-pause", "protect-release"):
         # elevated helper started after the user approved Windows' administrator prompt
         from sentinel_vision.protect import privileged_main
 
