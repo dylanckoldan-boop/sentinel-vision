@@ -643,3 +643,9 @@ code {
     color: #000;
   }
 }
+
+/* a 64-character fingerprint must wrap at 320 px instead of scrolling the page */
+.fingerprint code {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}

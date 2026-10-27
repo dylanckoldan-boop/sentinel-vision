@@ -2,6 +2,10 @@
 
     python site/build.py            # build
     python site/build.py --check    # build, then verify links, images, alt text, external resources and contrast
+    python site/build.py --offline  # local preview: skip the release signature check (no fingerprints shown)
+
+Without --offline the version, installer fingerprint and signing key shown come from the latest GitHub release,
+after its signed SHA256SUMS.txt verifies against the pinned keys (site/release_check.py); otherwise the build fails.
 
 The site is plain HTML and CSS: no JavaScript, no cookies, nothing loaded from other servers.
 Screenshots and icons are converted from the repository's own files (docs/screenshots, packaging/assets).
@@ -37,15 +41,39 @@ MAINTAINER = "Dylan Koldan"
 POLICY_DATE = dt.date(2026, 10, 11)  # change when the policies' meaning changes
 
 
-def version_and_date() -> tuple[str, dt.date]:
-    v = re.search(r'__version__ = "([^"]+)"', (ROOT / "src/sentinel_vision/__init__.py").read_text()).group(1)
+def version_and_date(v: str = "") -> tuple[str, dt.date]:
+    v = v or re.search(r'__version__ = "([^"]+)"', (ROOT / "src/sentinel_vision/__init__.py").read_text()).group(1)
     m = re.search(rf"^## \[{re.escape(v)}\] - (\d{{4}}-\d{{2}}-\d{{2}})", (ROOT / "CHANGELOG.md").read_text(), re.M)
     if not m:
         sys.exit(f"CHANGELOG.md has no '## [{v}] - YYYY-MM-DD' heading")
     return v, dt.date.fromisoformat(m.group(1))
 
 
-VERSION, RELEASED = version_and_date()
+OFFLINE = "--offline" in sys.argv
+if OFFLINE:
+    FACTS = None
+    VERSION, RELEASED = version_and_date()
+else:
+    sys.path.insert(0, str(SITE))
+    from release_check import ReleaseCheckError, latest
+
+    try:
+        FACTS = latest(OWNER)
+    except ReleaseCheckError as exc:
+        sys.exit(f"release check failed, the site was not built: {exc}")
+    VERSION, RELEASED = version_and_date(FACTS.version)
+
+
+def fingerprint_html() -> str:
+    if FACTS is None:
+        return (
+            '<p class="release-note">Offline preview: the published site shows the installer\'s verified '
+            "fingerprint here.</p>"
+        )
+    name, sha = FACTS.installer
+    return f"""<p>Fingerprint of <code>{name}</code>, checked against the signed list when this page was built:</p>
+        <p class="fingerprint"><code>{sha}</code></p>
+        <p class="release-note">Signed by release key <code>{FACTS.key_id}</code>.</p>"""
 
 
 def nice_date(d: dt.date) -> str:
@@ -495,6 +523,7 @@ def index(sizes) -> str:
         <code>Get-FileHash .\\SentinelVision-{VERSION}-Setup.exe</code> in PowerShell. If you already have
         Sentinel Vision, run <code>sentinel-vision-cli verify-release</code> in the download folder to check the
         signature and every fingerprint at once.</p>
+        {fingerprint_html()}
       </li>
       <li>
         <h3>Install</h3>
