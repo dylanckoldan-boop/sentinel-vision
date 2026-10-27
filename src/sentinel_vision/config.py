@@ -9,6 +9,7 @@ Everything Sentinel Vision writes lives under one data directory:
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import tempfile
@@ -18,7 +19,7 @@ from pathlib import Path
 
 from platformdirs import user_data_dir
 
-from sentinel_vision import APP_ID
+from sentinel_vision import APP_ID, schema
 
 # --------------------------------------------------------------------------- paths
 
@@ -306,6 +307,13 @@ class Settings:
                 and not (isinstance(default, float) and isinstance(v, int))
             ):
                 continue  # ignore wrongly typed values
+            if isinstance(default, bool) and type(v) is not bool:
+                continue
+            if isinstance(v, float) and not math.isfinite(v):
+                continue  # NaN or infinity
+            if k in schema.INT_RANGES or k in schema.LIST_FIELDS:
+                if not schema.valid(k, v):
+                    continue  # out of range (e.g. a 0 MB size limit would skip every file): keep the default
             if k == "abusech_auth_key":
                 from sentinel_vision import secretbox
 

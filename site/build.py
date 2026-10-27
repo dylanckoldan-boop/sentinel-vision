@@ -212,7 +212,7 @@ LEDGER = [
         "Threat-list downloads",
         ("on", "On by default", "Every 6 hours, and when you click Update now"),
         "The publisher of each list: GitHub (YARA Forge, Phishing.Database), abuse.ch, Spamhaus, "
-        "Proofpoint Emerging Threats, Phishing Army and OpenPhish",
+        "Proofpoint Emerging Threats, Phishing Army, OpenPhish, and CINS Army (off unless you turn it on)",
         "A request to download the list. The abuse.ch URLhaus and ThreatFox lists need a free abuse.ch key; if "
         "you add one, it's included so abuse.ch can authorise the download.",
     ),

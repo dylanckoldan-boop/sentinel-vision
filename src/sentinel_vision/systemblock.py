@@ -72,9 +72,21 @@ def load_list(root: Path, name: str) -> list[str]:
         return []
 
 
+# public DNS resolvers: blocking one would break name look-ups for the whole computer
+NEVER_BLOCK = tuple(
+    ipaddress.ip_address(a)
+    for a in (
+        "8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "9.9.9.9", "149.112.112.112", "208.67.222.222",
+        "208.67.220.220", "2001:4860:4860::8888", "2001:4860:4860::8844", "2606:4700:4700::1111",
+        "2606:4700:4700::1001", "2620:fe::fe", "2620:fe::9",
+    )
+)  # fmt: skip
+
+
 def safe_networks(networks: list[str]) -> list[str]:
     """Only public, routable networks; never anything that could cut off the local network or the whole
-    internet (private ranges, loopback, link-local, multicast, very large blocks)."""
+    internet (private ranges, loopback, link-local, multicast, blocks larger than /16 (IPv4) or /32 (IPv6), or
+    public DNS resolvers)."""
     out = []
     for n in networks:
         try:
@@ -83,7 +95,9 @@ def safe_networks(networks: list[str]) -> list[str]:
             continue
         if not net.is_global or net.is_multicast:
             continue
-        if (net.version == 4 and net.prefixlen < 8) or (net.version == 6 and net.prefixlen < 24):
+        if (net.version == 4 and net.prefixlen < 16) or (net.version == 6 and net.prefixlen < 32):
+            continue  # never more than 65,536 addresses in one entry, so one bad line can't block a provider
+        if any(ip in net for ip in NEVER_BLOCK):
             continue
         out.append(str(net))
     return sorted(set(out))[:MAX_NETWORKS]

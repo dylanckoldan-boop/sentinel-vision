@@ -26,6 +26,7 @@ QWidget. `sentinel_vision.plugin_api.PluginPage` is a ready-made descriptor:
 ```python
 from sentinel_vision.plugin_api import PluginPage
 
+
 def register():
     return [PluginPage("my_plugin", "My plugin", lambda ctx: MyWidget(ctx))]
 ```

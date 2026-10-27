@@ -39,19 +39,16 @@ READ_CHUNK = 8 * 1024 * 1024
 SID_RE = re.compile(r"^S-1(-\d{1,10}){1,15}$")
 
 # ---------------------------------------------------------------------------------------------- policy
-# Which settings protect the user, and which direction counts as "weaker".
-BOOL_ON = (
-    "realtime_enabled", "behavior_enabled", "behavior_kill_malicious", "behavior_block_ransomware",
-    "ransomware_enabled", "ransomware_auto_suspend", "network_enabled", "webshield_enabled", "auto_quarantine",
-    "hash_enabled", "yara_enabled", "clamav_enabled", "heuristics_enabled", "usb_autoscan", "privacy_monitor",
-    "netsec_enabled", "scan_archives", "check_app_updates", "schedule_quick_daily", "schedule_full_weekly",
-    "schedule_memory_scan", "keep_running",
-)  # fmt: skip
-LIST_KEEP = ("ransomware_folders", "watch_paths", "enabled_feeds")  # removing an entry weakens
-LIST_GROW = ("exclusions", "approved_plugins")  # adding an entry weakens
-NUM_LOWER_IS_STRONGER = ("heuristic_threshold",)
-NUM_HIGHER_IS_STRONGER = ("max_file_size_mb", "vault_max_mb", "vault_keep_versions")
-GLOBAL_BOOL_ON = ("webshield_block_hosts", "firewall_block")  # machine-wide
+# Which settings protect the user (and their allowed values) are defined in schema.py; "weaker" is decided here.
+from sentinel_vision.schema import (  # noqa: E402
+    BOOL_ON,
+    GLOBAL_BOOL_ON,
+    LIST_GROW,
+    LIST_KEEP,
+    NUM_HIGHER_IS_STRONGER,
+    NUM_LOWER_IS_STRONGER,
+)
+
 LABELS = {
     "realtime_enabled": "real-time file protection",
     "behavior_enabled": "behavior monitoring",

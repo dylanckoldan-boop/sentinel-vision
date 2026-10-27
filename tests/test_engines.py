@@ -105,7 +105,7 @@ def test_heuristic_masquerading_executable():
 
 
 def test_heuristic_rtlo_filename():
-    assert _heur("photo‮gpj.exe", b"hello")
+    assert _heur("photo\u202egpj.exe", b"hello")
 
 
 def test_heuristic_powershell_cradle():

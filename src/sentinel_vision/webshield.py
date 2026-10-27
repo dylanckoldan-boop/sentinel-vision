@@ -45,7 +45,11 @@ PROTECTED_DOMAINS = frozenset(
     x.com linkedin.com dropbox.com box.com zoom.us slack.com discord.com discordapp.com paypal.com ebay.com
     wikipedia.org mozilla.org akamaihd.net akamai.net fastly.net yahoo.com bing.com duckduckgo.com reddit.com
     netflix.com spotify.com adobe.com salesforce.com shopify.com wordpress.com docusign.net docusign.com
-    python.org pypi.org npmjs.com digicert.com letsencrypt.org""".split()
+    python.org pypi.org npmjs.com digicert.com letsencrypt.org
+    abuse.ch spamhaus.org emergingthreats.net proofpoint.com phishing.army openphish.com cinsscore.com circl.lu
+    pwnedpasswords.com haveibeenpwned.com clamav.net abuseipdb.com""".split()
+    # the second group: the publishers Sentinel Vision itself downloads from, so a poisoned list can never cut
+    # the app off from its own updates
 )
 # User-content hosting: subdomains are individual sites (blockable), the apex itself never is.
 SHARED_HOSTING = frozenset(
