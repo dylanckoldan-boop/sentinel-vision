@@ -487,6 +487,14 @@ class RemoteQuarantine:
 
 
 # ---------------------------------------------------------------------------------------------- migration
+def _unused_name(path: Path) -> Path:
+    candidate, n = path, 1
+    while candidate.exists():
+        n += 1
+        candidate = path.with_name(f"{path.name}-{n}")
+    return candidate
+
+
 def migrate_local_data(transport, local_vault_root: Path, local_quarantine_root: Path) -> tuple[int, int]:
     """Move a vault and quarantine kept in the user's own folder (older versions) into the protected service.
     Idempotent: each item is removed locally only after the service confirmed it. Returns (versions, items)."""
@@ -496,6 +504,7 @@ def migrate_local_data(transport, local_vault_root: Path, local_quarantine_root:
     moved_v = moved_q = 0
     if (local_vault_root / "vault.key").exists():
         lv = RollbackVault(local_vault_root, max_file_mb=2048, max_total_mb=1 << 20)
+        skipped = 0
         try:
             for v in lv.all_versions():
                 try:
@@ -506,11 +515,20 @@ def migrate_local_data(transport, local_vault_root: Path, local_quarantine_root:
                     transport.call("vault.preserve", {"key": v.path, "mtime": v.mtime}, data)
                 except ServiceError as exc:  # e.g. a file outside today's protected folders: skipped
                     log.info("version of %s not moved: %s", v.path, exc)
+                    skipped += 1
                     continue
                 moved_v += 1
         finally:
             lv.close()
-        _remove_tree(local_vault_root)
+        if skipped:
+            # never destroy versions the service didn't take: keep them, under a name that isn't migrated again
+            kept = _unused_name(local_vault_root.with_name(local_vault_root.name + "-not-moved"))
+            local_vault_root.rename(kept)
+            log.warning(
+                "%d document version(s) were not moved into protected storage; they are kept in %s", skipped, kept
+            )
+        else:
+            _remove_tree(local_vault_root)
     if (local_quarantine_root / "vault.key").exists():
         lq = Quarantine(local_quarantine_root)
         rq = RemoteQuarantine(transport)

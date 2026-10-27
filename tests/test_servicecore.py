@@ -219,6 +219,37 @@ def test_migrating_a_local_vault_and_quarantine(core, tmp_path):
     assert migrate_local_data(t, tmp_path / "old-vault", tmp_path / "old-q") == (0, 0)  # idempotent
 
 
+def test_first_start_moves_the_local_vault_after_registering_the_policy(core, tmp_path, isolated_home):
+    """Upgrading from a per-user install: the account's policy (its protected folders) must exist before the old
+    vault is moved, or every version is refused. Versions the service won't take are kept, never deleted."""
+    from sentinel_vision.config import sub_dir
+    from sentinel_vision.core import Sentinel
+    from sentinel_vision.service_client import LocalTransport, RemoteVault
+    from sentinel_vision.vault import RollbackVault
+
+    docs, other = tmp_path / "docs", tmp_path / "elsewhere"
+    docs.mkdir()
+    other.mkdir()
+    lv = RollbackVault(sub_dir("vault"))
+    for folder in (docs, other):
+        f = folder / "report.txt"
+        f.write_text("quarterly report\n" * 50)
+        lv.snapshot(f)
+    lv.close()
+    s = Settings()
+    s.realtime_enabled = s.network_enabled = s.ransomware_enabled = False
+    s.feeds = []
+    s.ransomware_folders = [str(docs)]
+    sv = Sentinel(s, service=LocalTransport(core, ALICE))
+    assert isinstance(sv.vault, RemoteVault)
+    assert sv.migrated[0] == 1
+    assert [f[0] for f in sv.vault.files()] == [os.path.normcase(str(docs / "report.txt"))]
+    assert not (sub_dir("vault") / "vault.key").exists()
+    kept = sub_dir("vault").with_name("vault-not-moved")
+    assert (kept / "vault.key").exists()  # the version outside the protected folders is kept, not destroyed
+    sv.shutdown()
+
+
 def test_frames_round_trip():
     import io
 

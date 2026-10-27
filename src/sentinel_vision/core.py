@@ -166,16 +166,6 @@ class Sentinel:
             self._events_after = t.call("events", {"after": 1 << 62})[0].get("last")
         except Exception:
             self._events_after = None  # an older service: fall back to times
-        try:
-            self.migrated = service_client.migrate_local_data(t, sub_dir("vault"), sub_dir("quarantine"))
-            if any(self.migrated):
-                self.db.log_event(
-                    "service",
-                    f"Moved {self.migrated[0]} document version(s) and {self.migrated[1]} quarantined file(s) "
-                    "into the protected storage",
-                )
-        except Exception:
-            log.exception("moving local data into the protection service failed (kept locally)")
         r = t.call("policy.get")[0]
         if not r.get("policy"):
             from sentinel_vision import autostart
@@ -195,6 +185,17 @@ class Sentinel:
         g = r.get("global") or {}
         self.settings.webshield_block_hosts = bool(g.get("webshield_block_hosts", False))
         self.settings.firewall_block = bool(g.get("firewall_block", False))
+        # after the account's policy exists: the vault only accepts files inside its protected folders
+        try:
+            self.migrated = service_client.migrate_local_data(t, sub_dir("vault"), sub_dir("quarantine"))
+            if any(self.migrated):
+                self.db.log_event(
+                    "service",
+                    f"Moved {self.migrated[0]} document version(s) and {self.migrated[1]} quarantined file(s) "
+                    "into the protected storage",
+                )
+        except Exception:
+            log.exception("moving local data into the protection service failed (kept locally)")
 
     def save_settings(self) -> None:
         """Save settings. With the protection service, a change that weakens protection raises

@@ -108,6 +108,8 @@ Assert ($status -match 'quarantine:\s+[1-9]') "quarantined file moved into prote
 $vault = SvCli @('rollback', 'list')
 Assert ($vault -match 'Report 1\.txt') "rollback vault moved into protected storage"
 Assert (-not (Test-Path (Join-Path $env:LOCALAPPDATA 'SentinelVision\vault\vault.key'))) "old unprotected vault removed"
+$appLog = Join-Path $env:LOCALAPPDATA 'SentinelVision\logs\sentinel.log'
+Assert (-not (Select-String -Path $appLog -Pattern 'not moved' -Quiet)) "every old document version was accepted by the service"
 Assert (-not (Test-Path (Join-Path $env:LOCALAPPDATA 'SentinelVision\quarantine\vault.key'))) "old unprotected quarantine removed"
 $v = (SvCli @('rollback', 'versions', "$docs\Report 1.txt"))
 $vid = [regex]::Match($v, '(?m)^\s*(\d+)\s').Groups[1].Value
@@ -139,7 +141,7 @@ W "selftest_exit=`$LASTEXITCODE"
 W (& '$newApp\sentinel-vision-cli.exe' rollback list 2>&1 | Out-String)
 W "rollback_exit=`$LASTEXITCODE"
 # audit SV-A05: an ordinary program can't add a rogue instance of the service's pipe
-try { `$ps = New-Object System.IO.Pipes.NamedPipeServerStream('SentinelVisionService', [System.IO.Pipes.PipeDirection]::InOut, -1); W 'PIPE_INSTANCE_ALLOWED'; `$ps.Dispose() } catch { W "pipe_instance_denied (`$(`$_.Exception.GetType().Name))" }
+try { `$ps = New-Object System.IO.Pipes.NamedPipeServerStream('SentinelVisionService', [System.IO.Pipes.PipeDirection]::InOut, -1); W 'PIPE_INSTANCE_ALLOWED'; `$ps.Dispose() } catch { `$e = `$_.Exception; while (`$e.InnerException) { `$e = `$e.InnerException }; W "pipe_instance_denied (`$(`$e.GetType().Name))" }
 W 'done'
 "@
 Set-Content -Path 'C:\Users\Public\svtest.ps1' -Value $probe
