@@ -57,7 +57,7 @@ REFRESH_EVERY = 10 * 60
 MUTATING = frozenset(
     {"pause", "resume", "policy.set", "system.refresh", "plugin.append", "vault.store", "vault.preserve",
      "quarantine.begin", "quarantine.chunk", "quarantine.commit", "quarantine.abort", "quarantine.delete",
-     "quarantine.release"}
+     "quarantine.release", "update.install"}
 )  # fmt: skip
 RELEASE_SECONDS = 120  # how long an administrator's approval to restore one quarantined item lasts
 SID_RE = re.compile(r"^S-1(-\d{1,10}){1,15}$")
@@ -241,6 +241,7 @@ SCHEMAS: dict[str, dict] = {
     "quarantine.release": {"sid": _SID, "id": _TOKEN},
     "quarantine.read": {"token": _TOKEN, "offset": _int(0, 2**42), "length": _int(1, READ_CHUNK)},
     "quarantine.close": {"token": _TOKEN},
+    "update.install": {"version": _text(32)},
 }  # fmt: skip
 REQUIRED = {
     "pause": ("sid", "session"), "plugin.append": ("name", "record"), "plugin.read": ("name",),
@@ -332,6 +333,9 @@ class SystemApplier:
 
     def status(self) -> dict:
         return {}
+
+    def install_update(self) -> str:
+        raise ServiceError("unsupported", "updates are installed by the Windows protection service")
 
 
 class ServiceCore:
@@ -565,6 +569,24 @@ class ServiceCore:
         if g.get("firewall_block"):
             out["firewall"] = self.applier.apply_firewall()
         return out
+
+    # ------------------------------------------------------------------ updates
+    def op_update_install(self, c: Caller, a: dict, p: bytes) -> dict:
+        """Install the newest signed release (any signed-in user may ask; only newer, signed releases are ever
+        installed, and the service downloads and checks them itself)."""
+        now = time.time()
+        with self._lock:
+            if now - self._last_refresh.get((c.sid, "update"), 0) < REFRESH_EVERY:
+                raise ServiceError("too_many", "an update was started less than ten minutes ago")
+            self._last_refresh[(c.sid, "update")] = now
+        try:
+            version = self.applier.install_update()
+        except ServiceError:
+            raise
+        except Exception as exc:
+            raise ServiceError("update_failed", str(exc)) from exc
+        self._event("*", "changed", f"Updating Sentinel Vision to {version}")
+        return {"version": version}
 
     # ------------------------------------------------------------------ plugin logs (append-only)
     def _plugin_log(self, sid: str, name: str):

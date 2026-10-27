@@ -122,7 +122,7 @@ def _fake_release(monkeypatch, payload: bytes, sums: bytes, sig: bytes | None):
     monkeypatch.setattr(app_update, "can_self_install", lambda _i: True)
 
 
-def test_installer_requires_valid_pq_signature_and_hash(monkeypatch):
+def test_installer_requires_valid_pq_signature_and_hash(monkeypatch, tmp_path):
     from sentinel_vision import pqsign
 
     key = pqsign.PrivateKey.generate()
@@ -134,26 +134,26 @@ def test_installer_requires_valid_pq_signature_and_hash(monkeypatch):
     good_sig = pqsign.sign(key, sums, pqsign.CONTEXT_RELEASE)
 
     _fake_release(monkeypatch, payload, sums, good_sig)
-    path = app_update.download_installer(info)
+    path = app_update.fetch_verified_installer(info, tmp_path)
     assert path.read_bytes() == payload and path.name == "SentinelVision-9.8.7-Setup.exe"
 
     # tampered installer (hash mismatch)
     _fake_release(monkeypatch, payload + b"evil", sums, good_sig)
     with pytest.raises(app_update.AppUpdateError, match="SHA-256"):
-        app_update.download_installer(info)
+        app_update.fetch_verified_installer(info, tmp_path)
 
     # attacker swaps the checksum list too: signature no longer matches
     evil = b"MZ evil"
     evil_sums = f"{hashlib.sha256(evil).hexdigest()}  SentinelVision-9.8.7-Setup.exe\n".encode()
     _fake_release(monkeypatch, evil, evil_sums, good_sig)
     with pytest.raises(app_update.AppUpdateError, match="signature"):
-        app_update.download_installer(info)
+        app_update.fetch_verified_installer(info, tmp_path)
 
     # signed by a different (unpinned) key
     rogue = pqsign.sign(pqsign.PrivateKey.generate(), evil_sums, pqsign.CONTEXT_RELEASE)
     _fake_release(monkeypatch, evil, evil_sums, rogue)
     with pytest.raises(app_update.AppUpdateError, match="signature"):
-        app_update.download_installer(info)
+        app_update.fetch_verified_installer(info, tmp_path)
 
 
 def test_unsigned_release_is_not_auto_installed_once_keys_are_pinned(monkeypatch):
@@ -168,7 +168,7 @@ def test_unsigned_release_is_not_auto_installed_once_keys_are_pinned(monkeypatch
         app_update.verify_checksums(b"x", None)
 
 
-def test_downgrade_is_refused(monkeypatch):
+def test_downgrade_is_refused(monkeypatch, tmp_path):
     old = dict(SIGNED_RELEASE, tag_name="v0.0.1")
     old["assets"] = [
         {"name": "SentinelVision-0.0.1-Setup.exe", "browser_download_url": "https://example.test/setup.exe"},
@@ -177,7 +177,7 @@ def test_downgrade_is_refused(monkeypatch):
     info = app_update.parse_release(old)
     _fake_release(monkeypatch, b"MZ", b"", b"")
     with pytest.raises(app_update.AppUpdateError, match="downgrade"):
-        app_update.download_installer(info)
+        app_update.fetch_verified_installer(info, tmp_path)
 
 
 def test_expected_hash_parsing():
@@ -190,3 +190,65 @@ def test_expected_hash_parsing():
 def test_self_install_only_for_windows_installer_build():
     info = app_update.parse_release(RELEASE)
     assert app_update.can_self_install(info) is False  # tests never run from an installed build
+
+
+def test_service_update_runs_only_a_verified_newer_installer_once(monkeypatch, tmp_path):
+    """Audit finding SV-A07: the service fetches, verifies and launches the installer from its own folder."""
+    from sentinel_vision import pqsign
+
+    key = pqsign.PrivateKey.generate()
+    monkeypatch.setattr(app_update, "release_keys", lambda: [key.public_key()])
+    info = app_update.parse_release(SIGNED_RELEASE)
+    payload = b"MZ fake installer"
+    sums = f"{hashlib.sha256(payload).hexdigest()}  SentinelVision-9.8.7-Setup.exe\n".encode()
+    launched = []
+
+    def launch(path, args):
+        launched.append((path, args))
+
+    folder = tmp_path / "updates"
+    _fake_release(monkeypatch, payload + b"tampered", sums, pqsign.sign(key, sums, pqsign.CONTEXT_RELEASE))
+    with pytest.raises(app_update.AppUpdateError):
+        app_update.service_update(folder, launch, latest=lambda: info)
+    assert launched == []
+
+    old = dict(SIGNED_RELEASE, tag_name="v0.0.1")
+    old["assets"] = [{"name": "SentinelVision-0.0.1-Setup.exe", "browser_download_url": "https://example.test/x"},
+                     *SIGNED_RELEASE["assets"][1:]]  # fmt: skip
+    with pytest.raises(app_update.AppUpdateError):
+        app_update.service_update(folder, launch, latest=lambda: app_update.parse_release(old))
+    assert launched == []
+
+    _fake_release(monkeypatch, payload, sums, pqsign.sign(key, sums, pqsign.CONTEXT_RELEASE))
+    assert app_update.service_update(folder, launch, latest=lambda: info) == "9.8.7"
+    assert len(launched) == 1
+    path, args = launched[0]
+    assert path.parent == folder and path.read_bytes() == payload
+    assert "/SERVICEUPDATE=1" in args and "/VERYSILENT" in args
+
+
+def test_update_op_needs_the_windows_service_and_is_rate_limited(tmp_path):
+    from sentinel_vision.servicecore import Caller, ServiceCore, ServiceError, SystemApplier
+
+    class Applier(SystemApplier):
+        runs = 0
+
+        def install_update(self):
+            Applier.runs += 1
+            return "9.8.7"
+
+    alice = Caller("S-1-5-21-1-2-3-1001", pid=1, session=1)
+    core = ServiceCore(tmp_path / "svc", Applier())
+    try:
+        assert core.handle(alice, "update.install", {"version": "9.8.7"})[0] == {"version": "9.8.7"}
+        with pytest.raises(ServiceError):
+            core.handle(alice, "update.install", {})
+        assert Applier.runs == 1
+    finally:
+        core.close()
+    plain = ServiceCore(tmp_path / "svc2")
+    try:
+        with pytest.raises(ServiceError):
+            plain.handle(alice, "update.install", {})
+    finally:
+        plain.close()

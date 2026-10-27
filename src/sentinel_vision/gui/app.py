@@ -366,7 +366,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Check for updates", f"You have the latest version ({__version__}).")
             return
         self.available_update = info
-        auto = app_update.can_self_install(info)
+        # installed by the protection service only (never from a folder other programs can write to)
+        auto = app_update.can_self_install(info) and self.sentinel.service is not None
         self.banner_text.setText(
             f"<b>Sentinel Vision {info.version}</b> is available (you have {__version__})."
             + ("" if auto else " Download it from the release page.")
@@ -382,7 +383,7 @@ class MainWindow(QMainWindow):
         info = self.available_update
         if info is None:
             return
-        if not app_update.can_self_install(info):
+        if not app_update.can_self_install(info) or self.sentinel.service is None:
             QDesktopServices.openUrl(QUrl(info.page_url))
             return
         if self._update_task is not None:
@@ -391,28 +392,29 @@ class MainWindow(QMainWindow):
             QMessageBox.question(
                 self,
                 "Install update",
-                f"Download and install Sentinel Vision {info.version}?\n\n"
-                "The installer is verified against the release's SHA-256 checksums, closes Sentinel Vision, "
-                "upgrades it and starts it again. Your settings, quarantine and history are kept.",
+                f"Install Sentinel Vision {info.version}?\n\n"
+                "The protection service downloads it, checks its post-quantum signature and SHA-256, and installs "
+                "it. Sentinel Vision closes and starts again on its own. Your settings, quarantine and history "
+                "are kept.",
             )
             != QMessageBox.Yes
         ):
             return
         self.banner_go.setEnabled(False)
-        self.banner_go.setText("Downloading…")
-        task = Task(lambda _t: app_update.download_installer(info))
-        task.signals.finished.connect(self._run_installer)
+        self.banner_go.setText("Installing…")
+        service = self.sentinel.service
+        task = Task(lambda _t: service.call("update.install", {"version": info.version})[0])
+        task.signals.finished.connect(self._update_started)
         task.signals.failed.connect(self._update_failed)
         self._update_task = start(task)
 
-    def _run_installer(self, path) -> None:
+    def _update_started(self, result) -> None:
         self._update_task = None
-        try:
-            app_update.run_installer(path)
-        except Exception as exc:
-            self._update_failed(str(exc))
-            return
-        self.quit()
+        version = (result or {}).get("version", "")
+        self.banner_text.setText(
+            f"<b>Installing Sentinel Vision {version}.</b> It closes in a moment and starts again on its own."
+        )
+        self.banner_go.setVisible(False)
 
     def _update_failed(self, err: str) -> None:
         self._update_task = None
