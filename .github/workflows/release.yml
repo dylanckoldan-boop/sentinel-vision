@@ -294,6 +294,9 @@ jobs:
       startsWith(github.ref, 'refs/tags/v') ||
       (github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
+    # audit finding SV-B03: the signing key is only released to this job after the owner approves the
+    # deployment (Settings -> Environments -> release -> Required reviewers; see docs/REPO_SETTINGS.md)
+    environment: release
     permissions:
       contents: write
     env:
