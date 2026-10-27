@@ -1,0 +1,2 @@
+# Licence texts are checked byte for byte (tests/test_ledger.py): never convert their line endings
+packaging/licenses/*.txt -text

@@ -4,6 +4,8 @@ A new URL in the app fails this test until the ledger (and HOST_PUBLISHER below)
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 # every host the app's code can contact -> the name the ledger uses for its publisher
@@ -45,7 +47,7 @@ def test_every_host_in_the_app_is_in_the_ledger():
 
 def test_licences_page_lists_every_runtime_dependency():
     """Audit finding SV-E01: the website's Licences page names every package the app depends on."""
-    import tomllib
+    tomllib = pytest.importorskip("tomllib")  # Python 3.11+; the other versions in CI cover it
 
     deps = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
     names = {re.split(r"[<>=;\[ ]", d, maxsplit=1)[0].lower() for d in deps}
