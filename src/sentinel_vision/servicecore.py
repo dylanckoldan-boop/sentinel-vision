@@ -107,6 +107,27 @@ def weakened(old: dict, new: dict) -> list[str]:
     return out
 
 
+def strengthen(policy: dict, floor: dict) -> dict:
+    """``policy`` with every field at least as strong as in ``floor`` (stronger choices in ``policy`` are kept)."""
+    out = dict(policy)
+    for k, fv in floor.items():
+        pv = policy.get(k, fv)
+        if k in BOOL_ON or k in GLOBAL_BOOL_ON:
+            out[k] = bool(pv) or bool(fv)
+        elif k in LIST_KEEP:
+            out[k] = list(dict.fromkeys([*fv, *pv]))
+        elif k in LIST_GROW:
+            keep = set(_norm_list(fv))
+            out[k] = [x for x in pv if _norm_list([x])[0] in keep]
+        elif k in NUM_LOWER_IS_STRONGER:
+            out[k] = min(pv, fv)
+        elif k in NUM_HIGHER_IS_STRONGER:
+            out[k] = max(pv, fv)
+        elif k == "auto_update_hours":
+            out[k] = fv if (pv == 0 and fv > 0) or (fv > 0 and pv > fv) else pv
+    return out
+
+
 def policy_from_settings(settings) -> dict:
     d = {k: getattr(settings, k) for k in POLICY_FIELDS if hasattr(settings, k)}
     d["enabled_feeds"] = sorted(f.name for f in getattr(settings, "feeds", []) if f.enabled)

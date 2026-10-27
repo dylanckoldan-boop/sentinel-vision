@@ -3,7 +3,7 @@
 Everything Sentinel Vision writes lives under one data directory:
 
 * the user's platform data dir (``platformdirs``) by default, or
-* ``$SENTINEL_VISION_HOME`` when set (portable installs, tests, CI).
+* ``$SENTINEL_VISION_HOME`` when set and running from source (tests, CI, development); installed builds ignore it.
 """
 
 from __future__ import annotations
@@ -25,7 +25,8 @@ from sentinel_vision import APP_ID, schema
 
 
 def data_dir() -> Path:
-    override = os.environ.get("SENTINEL_VISION_HOME")
+    # a developer switch, ignored in installed builds where any program could set it (audit finding SV-F04)
+    override = os.environ.get("SENTINEL_VISION_HOME") if not getattr(sys, "frozen", False) else None
     base = Path(override) if override else Path(user_data_dir(APP_ID, appauthor=False))
     base.mkdir(parents=True, exist_ok=True)
     _restrict(base)

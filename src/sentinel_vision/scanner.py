@@ -40,8 +40,7 @@ EXACT_ENGINES = ("hash", "clamav", "cloud")
 
 def _system_dirs() -> tuple[str, ...]:
     if sys.platform == "win32":
-        windir = os.environ.get("WINDIR") or os.environ.get("SystemRoot") or r"C:\Windows"
-        return (os.path.normcase(os.path.abspath(windir)),)
+        return (os.path.normcase(os.path.abspath(policy.windows_dir())),)
     if sys.platform == "darwin":
         return ("/System", "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/libexec", "/bin", "/sbin", "/Library/Apple")
     return (

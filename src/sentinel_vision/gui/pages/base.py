@@ -74,6 +74,17 @@ def commit_settings(parent: QWidget, sentinel: Sentinel, apply: bool = True) -> 
         return True
     except ProtectionChangeNeedsAdmin as exc:
         names = ", ".join(label(f) for f in exc.fields)
+        if getattr(sentinel, "degraded", False):
+            QMessageBox.warning(
+                parent,
+                "Protection can't be reduced right now",
+                f"This change reduces your protection ({names}), and Sentinel Vision can't reach its protection "
+                "service to ask for administrator approval. The change was undone.",
+            )
+            sentinel.reload_protected_settings()
+            if apply:
+                sentinel.apply_runtime()
+            return False
         answer = QMessageBox.question(
             parent,
             "Administrator approval needed",

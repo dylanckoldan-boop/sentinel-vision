@@ -89,7 +89,8 @@ class PipeTransport:  # pragma: no cover - Windows only, exercised by the Window
             try:
                 self.h = win32file.CreateFile(
                     PIPE_NAME,
-                    win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+                    # exactly what the pipe grants signed-in users: read, write data, set the read mode
+                    win32file.GENERIC_READ | 0x0002 | 0x0100,  # FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES
                     0,
                     None,
                     win32file.OPEN_EXISTING,
@@ -177,19 +178,117 @@ def service_installed() -> bool:
     )
 
 
-def connect(timeout: float = 2.0):
-    """A transport to the protection service, or None when it isn't installed/running (or not on Windows)."""
-    if sys.platform != "win32" or os.environ.get("SENTINEL_VISION_NO_SERVICE") == "1":
+# why the last connect() failed ("" when it succeeded); "impostor" when a pipe not owned by a Windows service answered
+last_problem = ""
+
+
+def developer_mode() -> bool:
+    """Developer switches (environment variables) only work when running from source, never in an installed build:
+    any program running as the user can set environment variables (audit finding SV-F04)."""
+    return not getattr(sys, "frozen", False)
+
+
+def connect(timeout: float = 2.0, wait_for_start: bool = True):
+    """A transport to the protection service, or None when it isn't installed/running (or not on Windows).
+
+    When the service is installed but this returns None, the app runs in *degraded* mode (see core.Sentinel), never
+    in the unprotected local mode."""
+    global last_problem
+    last_problem = ""
+    if sys.platform != "win32":
         return None
-    if service_installed():
+    if developer_mode() and os.environ.get("SENTINEL_VISION_NO_SERVICE") == "1":
+        return None
+    if service_installed() and wait_for_start:
         timeout = max(timeout, 20.0)  # installed: it may still be starting (sign-in, just after an update)
     try:
         t = ResilientTransport(timeout)
         t.call("ping")
         return t
     except Exception as exc:
-        log.info("protection service not available: %s", exc)
+        last_problem = "impostor" if "not owned by a Windows service" in str(exc) else str(exc)
+        log.warning("protection service not available: %s", exc)
         return None
+
+
+# ---------------------------------------------------------------------------------------------- degraded mode
+OFFLINE_MESSAGE = (
+    "the protection service isn't reachable, so this can't be done right now (nothing is stored outside the "
+    "protected storage)"
+)
+
+
+class OfflineQuarantine:
+    """Stands in for the quarantine while the installed protection service can't be reached. Nothing is ever
+    written to the user's own folder, where other programs could read or change it (audit finding SV-A01)."""
+
+    def add(self, path, threat: str, engine: str):
+        raise QuarantineError(OFFLINE_MESSAGE)
+
+    def add_external(self, path, reason: str = "", source: str = "agent-guard") -> str:
+        raise QuarantineError(OFFLINE_MESSAGE)
+
+    def add_stream(self, fh, original_path: str, threat: str, engine: str):
+        raise QuarantineError(OFFLINE_MESSAGE)
+
+    def list(self) -> list:
+        return []
+
+    def get(self, item_id: str):
+        raise QuarantineError(OFFLINE_MESSAGE)
+
+    def iter_plain(self, item_id: str):
+        raise QuarantineError(OFFLINE_MESSAGE)
+
+    def restore(self, item_id: str, dest=None, overwrite: bool = False):
+        raise QuarantineError(OFFLINE_MESSAGE)
+
+    def delete(self, item_id: str) -> None:
+        raise QuarantineError(OFFLINE_MESSAGE)
+
+    def total_size(self) -> int:
+        return 0
+
+
+class OfflineVault(VaultFiles):
+    """Stands in for the rollback vault while the protection service can't be reached: stores nothing."""
+
+    def __init__(self) -> None:
+        self.max_file = 50 * 1024 * 1024
+        self.max_total = 0
+
+    def eligible(self, path) -> bool:
+        return False
+
+    def snapshot(self, path, force: bool = False):
+        return None
+
+    def store(self, key: str, data: bytes, mtime: float, force: bool = False):
+        return None
+
+    def read(self, version_id: int):
+        raise VaultError(OFFLINE_MESSAGE)
+
+    def rollback_plan(self, since: float, folder_key: str = "") -> list:
+        return []
+
+    def versions(self, path) -> list:
+        return []
+
+    def files(self, limit: int = 5000) -> list:
+        return []
+
+    def stats(self) -> tuple[int, int, int]:
+        return 0, 0, 0
+
+    def used_bytes(self) -> int:
+        return 0
+
+    def restore(self, version_id: int, dest=None):
+        raise VaultError(OFFLINE_MESSAGE)
+
+    def close(self) -> None:
+        pass
 
 
 # ---------------------------------------------------------------------------------------------- vault

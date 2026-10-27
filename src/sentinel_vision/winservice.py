@@ -37,8 +37,11 @@ DESCRIPTION = (
 )
 # only Windows itself (SYSTEM) and administrators; inherited by everything inside; owner SYSTEM
 DATA_SDDL = "O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
-# signed-in users may connect; never over the network; nobody may create a second server instance
-PIPE_SDDL = "D:P(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"
+# Signed-in users may connect (read, write data, set the read mode); never over the network. They get no
+# FILE_CREATE_PIPE_INSTANCE (the 0x4 bit, which GENERIC_WRITE would include on a pipe), so no ordinary program can
+# add a rogue server instance of this pipe while the service runs (audit finding SV-A05).
+# 0x12018b = FILE_GENERIC_READ | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES
+PIPE_SDDL = "D:P(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12018b;;;AU)"
 WATCH_INTERVAL = 15
 HEARTBEAT_STALE = 300
 RESTART_LIMIT = 3

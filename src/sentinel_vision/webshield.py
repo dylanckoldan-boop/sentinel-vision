@@ -373,7 +373,9 @@ def check_url(url: str, intel: DomainIntel | None = None) -> LinkVerdict:
 
 def hosts_path() -> Path:
     if sys.platform == "win32":
-        return Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "drivers" / "etc" / "hosts"
+        from sentinel_vision.policy import windows_dir
+
+        return Path(windows_dir()) / "System32" / "drivers" / "etc" / "hosts"
     return Path("/etc/hosts")
 
 
