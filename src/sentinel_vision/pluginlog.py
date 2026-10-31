@@ -1,4 +1,4 @@
-"""Append-only, hash-chained record logs for plugins (for example Agent Guard's audit trail and revocation list).
+"""Append-only, hash-chained record logs for plugins (for example Foldward's audit trail and revocation list).
 
 On Windows with the protection service, each log is kept by the service in its protected folder
 (``%ProgramData%\\SentinelVision\\Service\\users\\<account>\\plugins\\<name>\\log.jsonl``): a plugin running with the

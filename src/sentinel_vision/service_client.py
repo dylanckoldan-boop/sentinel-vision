@@ -20,7 +20,13 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from sentinel_vision.quarantine import O_BIN, QuarantineError, QuarantineItem, restore_target
+from sentinel_vision.quarantine import (
+    DEFAULT_EXTERNAL_SOURCE,
+    O_BIN,
+    QuarantineError,
+    QuarantineItem,
+    restore_target,
+)
 from sentinel_vision.servicecore import MAX_FRAME, Caller, ServiceCore, ServiceError
 from sentinel_vision.vault import VaultError, VaultFiles, Version
 
@@ -250,7 +256,7 @@ class OfflineQuarantine:
     def add(self, path, threat: str, engine: str):
         raise QuarantineError(OFFLINE_MESSAGE)
 
-    def add_external(self, path, reason: str = "", source: str = "agent-guard") -> str:
+    def add_external(self, path, reason: str = "", source: str = DEFAULT_EXTERNAL_SOURCE) -> str:
         raise QuarantineError(OFFLINE_MESSAGE)
 
     def add_stream(self, fh, original_path: str, threat: str, engine: str):
@@ -419,7 +425,7 @@ class RemoteQuarantine:
             raise QuarantineError(f"could not remove original file: {exc}") from exc
         return item
 
-    def add_external(self, path: str | Path, reason: str = "", source: str = "agent-guard") -> str:
+    def add_external(self, path: str | Path, reason: str = "", source: str = DEFAULT_EXTERNAL_SOURCE) -> str:
         """Quarantine a file another program found, into the protected store. Returns the id."""
         from sentinel_vision.quarantine import external_labels, external_target
 

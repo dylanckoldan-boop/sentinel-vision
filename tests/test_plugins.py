@@ -1,6 +1,7 @@
 """Plugin host: plugins appear only after approval, come only from places other programs can't change, and can
 never crash Sentinel Vision."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -156,13 +157,15 @@ def test_frozen_portable_or_unusual_locations_have_no_plugins(monkeypatch, tmp_p
 def test_allowing_a_plugin_needs_administrator_approval_with_the_service():
     from sentinel_vision.servicecore import weakened
 
-    assert weakened({"approved_plugins": []}, {"approved_plugins": ["agent-guard@1.0#abc"]}) == ["approved_plugins"]
-    assert weakened({"approved_plugins": ["agent-guard@1.0#abc"]}, {"approved_plugins": []}) == []
+    assert weakened({"approved_plugins": []}, {"approved_plugins": ["foldward@1.0#abc"]}) == ["approved_plugins"]
+    assert weakened({"approved_plugins": ["foldward@1.0#abc"]}, {"approved_plugins": []}) == []
 
 
 def test_sentinel_vision_never_imports_a_plugin_by_name():
     src = Path(__file__).resolve().parents[1] / "src"
-    offenders = [p for p in src.rglob("*.py") if "agent_guard" in p.read_text(encoding="utf-8")]
+    # companions (Foldward, formerly Agent Guard) are found by iterating the entry-point group, never by name
+    pattern = re.compile(r"^\s*(import|from)\s+(foldward|agent_guard)\b|entry_points\(\)\[|import_module\(", re.M)
+    offenders = [str(p) for p in src.rglob("*.py") if pattern.search(p.read_text(encoding="utf-8"))]
     assert offenders == []
 
 
@@ -173,3 +176,19 @@ def test_plugin_api_surface():
     from sentinel_vision.gui.pages.base import AppContext, Page
 
     assert plugin_api.AppContext is AppContext and plugin_api.Page is Page
+
+
+def test_foldward_is_found_in_its_own_folder_by_iterating_the_group(tmp_path, monkeypatch):
+    """Foldward (formerly Agent Guard) installs into plugins\\foldward and declares the entry point `foldward`.
+    Nothing in Sentinel Vision names it: any folder, any entry-point name in the group is found the same way."""
+    from sentinel_vision import plugins
+
+    root = tmp_path / "Program Files" / "Sentinel Vision" / "plugins"
+    make_plugin(root / "foldward", name="foldward", key="ag_dashboard")
+    monkeypatch.setattr(plugins, "plugins_root", lambda: root)
+    monkeypatch.setattr(plugins, "admin_only_problem", lambda p: "")
+    (f,) = plugins.discover()
+    assert f.loadable and f.name == "foldward" and f.location.endswith("foldward")
+    assert [ep.name for ep in f.entry_points] == ["foldward"]
+    assert [p.key for p in plugins.load_pages(f)] == ["ag_dashboard"]
+    assert f.fingerprint.startswith("foldward@1.0#")  # a new name: the user allows it once more

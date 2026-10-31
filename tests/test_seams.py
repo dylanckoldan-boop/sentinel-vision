@@ -1,7 +1,9 @@
-"""Seams for companion programs such as Agent Guard: `quarantine add`, `net block`, plugin log, plugin host.
+"""Seams for companion programs such as Foldward (formerly Agent Guard): `quarantine add`, `net block`, plugin log,
+plugin host.
 Sentinel Vision never imports those programs; they call the command line or plug into documented entry points."""
 
 import os
+import re
 import sys
 
 import pytest
@@ -30,10 +32,10 @@ def _file(folder, name="tool.bin", data=b"agent payload " * 100):
 def test_add_external_moves_the_file_and_records_who_asked(tmp_path):
     q = Quarantine(tmp_path / "q")
     f = _file(tmp_path / "work")
-    item_id = q.add_external(str(f), "agent fetched an unsigned binary", "agent-guard")
+    item_id = q.add_external(str(f), "agent fetched an unsigned binary", "foldward")
     assert not f.exists()  # moved, like automatic quarantine
     item = q.get(item_id)
-    assert item.threat == "agent fetched an unsigned binary" and item.engine == "external:agent-guard"
+    assert item.threat == "agent fetched an unsigned binary" and item.engine == "external:foldward"
     restored = q.restore(item_id)
     assert restored.read_bytes() == b"agent payload " * 100
 
@@ -43,9 +45,9 @@ def test_add_external_through_the_protected_service(core, tmp_path):
 
     q = RemoteQuarantine(LocalTransport(core, ALICE))
     f = _file(tmp_path / "work")
-    item_id = q.add_external(f, "", "agent-guard")
+    item_id = q.add_external(f, "", "foldward")
     assert not f.exists()
-    assert q.get(item_id).threat == "Sent to quarantine by agent-guard"
+    assert q.get(item_id).threat == "Sent to quarantine by foldward"
     assert [i.id for i in RemoteQuarantine(LocalTransport(core, BOB)).list()] == []  # other accounts can't see it
     core.handle(ALICE_ADMIN, "quarantine.release", {"sid": ALICE.sid, "id": item_id})  # restoring needs approval
     assert q.restore(item_id).read_bytes() == b"agent payload " * 100
@@ -61,7 +63,7 @@ def test_add_external_refuses_what_it_must_not_touch(tmp_path, monkeypatch, isol
     with pytest.raises(QuarantineError):
         q.add_external(tmp_path)  # a folder
     with pytest.raises(QuarantineError):
-        q.add_external(_file(data_dir() / "x"), "", "agent-guard")  # Sentinel Vision's own data
+        q.add_external(_file(data_dir() / "x"), "", "foldward")  # Sentinel Vision's own data
     f = _file(tmp_path / "w")
     with pytest.raises(QuarantineError):
         q.add_external(f, "", "Agent Guard; rm -rf")  # source names are short identifiers
@@ -156,16 +158,16 @@ def test_plugin_log_through_the_service_is_per_account_and_cannot_be_rewritten(c
     from sentinel_vision.service_client import LocalTransport
     from sentinel_vision.servicecore import ServiceError
 
-    alice = PluginLog("agent-guard", LocalTransport(core, ALICE))
+    alice = PluginLog("foldward", LocalTransport(core, ALICE))
     assert alice.protected
     assert alice.append({"event": "quarantined", "id": "abc"}) == 1
     assert alice.append({"event": "revoked", "agent": "x"}) == 2
     entries = alice.read()
     assert [e["record"]["event"] for e in entries] == ["quarantined", "revoked"] and entries[0]["pid"] == ALICE.pid
     assert alice.verify() == (True, 2)
-    assert PluginLog("agent-guard", LocalTransport(core, BOB)).read() == []  # each account has its own log
+    assert PluginLog("foldward", LocalTransport(core, BOB)).read() == []  # each account has its own log
     with pytest.raises(ServiceError):  # reading someone else's log needs administrator rights
-        core.handle(BOB, "plugin.read", {"name": "agent-guard", "sid": ALICE.sid})
+        core.handle(BOB, "plugin.read", {"name": "foldward", "sid": ALICE.sid})
     for bad in ("../../policy", "Agent Guard", "", "a" * 41):
         with pytest.raises(ServiceError):
             core.handle(ALICE, "plugin.append", {"name": bad, "record": {}})
@@ -181,7 +183,7 @@ def test_plugin_log_refuses_to_fall_back_when_the_service_is_installed_but_down(
     monkeypatch.setattr(service_client, "connect", lambda *a, **k: None)
     monkeypatch.setattr(service_client, "service_installed", lambda: True)
     with pytest.raises(plugin_api.PluginLogError):
-        plugin_api.plugin_log("agent-guard")
+        plugin_api.plugin_log("foldward")
 
 
 def test_plugin_log_cli(capsys, isolated_home):
@@ -189,13 +191,13 @@ def test_plugin_log_cli(capsys, isolated_home):
 
     from sentinel_vision.cli import main
 
-    assert main(["plugin-log", "append", "agent-guard", "--json", '{"event": "test"}']) == 0
+    assert main(["plugin-log", "append", "foldward", "--json", '{"event": "test"}']) == 0
     assert capsys.readouterr().out.strip() == "1"
-    assert main(["plugin-log", "read", "agent-guard"]) == 0
+    assert main(["plugin-log", "read", "foldward"]) == 0
     assert json.loads(capsys.readouterr().out.splitlines()[0])["record"] == {"event": "test"}
-    assert main(["plugin-log", "verify", "agent-guard"]) == 0
+    assert main(["plugin-log", "verify", "foldward"]) == 0
     assert json.loads(capsys.readouterr().out)["intact"] is True
-    assert main(["plugin-log", "append", "agent-guard", "--json", "not json"]) == 2
+    assert main(["plugin-log", "append", "foldward", "--json", "not json"]) == 2
     assert main(["plugin-log", "append", "../x", "--json", "{}"]) == 2
 
 
@@ -203,7 +205,57 @@ def test_plugin_dir_is_private_and_named_safely(isolated_home):
     from sentinel_vision.config import plugin_dir
     from sentinel_vision.pluginlog import PluginLogError
 
-    d = plugin_dir("agent-guard")
-    assert d.is_dir() and d.name == "agent-guard"
+    d = plugin_dir("foldward")
+    assert d.is_dir() and d.name == "foldward"
     with pytest.raises(PluginLogError):
         plugin_dir("../escape")
+
+
+# ------------------------------------------------------------------------------------------------ Foldward rename
+def test_quarantine_add_names_foldward_by_default(tmp_path, isolated_home, capsys):
+    """Foldward (formerly Agent Guard) no longer passes --source: the default names it."""
+    from sentinel_vision import cli
+    from sentinel_vision.quarantine import DEFAULT_EXTERNAL_SOURCE
+
+    assert DEFAULT_EXTERNAL_SOURCE == "foldward"
+    assert cli.build_parser().parse_args(["quarantine", "add", "x"]).source == DEFAULT_EXTERNAL_SOURCE
+    q = Quarantine(tmp_path / "q")
+    item = q.get(q.add_external(_file(tmp_path / "w")))
+    assert item.engine == "external:foldward" and item.threat == "Sent to quarantine by foldward"
+    # items added under the old name keep it, and a caller can still name itself explicitly
+    old = q.get(q.add_external(_file(tmp_path / "w2"), "", "agent-guard"))
+    assert old.engine == "external:agent-guard"
+    f = _file(tmp_path / "w3")
+    assert cli.main(["quarantine", "add", str(f), "--reason", "unsigned binary"]) == 0
+    item_id = capsys.readouterr().out.strip()
+    assert re.fullmatch(r"[0-9a-f]{32}", item_id)  # Foldward relies on the 32-character hex id
+
+
+def test_the_legacy_agent_guard_log_stays_readable_and_verifiable_next_to_foldward(core, isolated_home, capsys):
+    """Records written under the old name are never orphaned: both logs are kept, read and verified separately,
+    and writing to one never touches the other (they are separate hash chains, so nothing is copied across)."""
+    import json
+
+    from sentinel_vision.cli import main
+    from sentinel_vision.plugin_api import PluginLog
+    from sentinel_vision.service_client import LocalTransport
+
+    t = LocalTransport(core, ALICE)
+    legacy = PluginLog("agent-guard", t)
+    legacy.append({"event": "quarantined", "id": "a" * 32})
+    legacy.append({"event": "revoked", "agent": "x"})
+    new = PluginLog("foldward", t)
+    assert new.read() == []  # a new, empty chain
+    new.append({"event": "quarantined", "id": "b" * 32})
+    assert legacy.verify() == (True, 2) and new.verify() == (True, 1)
+    assert [e["record"]["event"] for e in PluginLog("agent-guard", t).read()] == ["quarantined", "revoked"]
+
+    # the same through the command line, with the exit codes Foldward relies on (0 intact)
+    for name, count in (("agent-guard", 1), ("foldward", 2)):
+        for i in range(count):
+            assert main(["plugin-log", "append", name, "--json", json.dumps({"n": i})]) == 0
+        capsys.readouterr()
+        assert main(["plugin-log", "verify", name]) == 0
+        assert json.loads(capsys.readouterr().out)["intact"] is True
+    assert main(["plugin-log", "read", "agent-guard"]) == 0
+    assert len(capsys.readouterr().out.splitlines()) == 1

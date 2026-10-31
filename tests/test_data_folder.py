@@ -12,7 +12,7 @@ def test_own_files_are_skipped_and_anything_else_is_scanned(sentinel):
     for own in ("sentinel.db", "settings.json", "logs/sentinel.log", "logs/sentinel.log.1", "vault/blobs/ab/x.svb",
                 "quarantine/1.svq", "feeds/networks.txt"):  # fmt: skip
         assert sc.is_excluded(str(root / own)), own
-    for other in ("logs/update-helper.exe", "rules/run.ps1", "plugins/agent-guard/tool.py", "evil.dll"):
+    for other in ("logs/update-helper.exe", "rules/run.ps1", "plugins/foldward/tool.py", "evil.dll"):
         assert not sc.is_excluded(str(root / other)), other
 
 

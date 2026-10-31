@@ -1,7 +1,7 @@
 # Plugins and companion programs
 
-Sentinel Vision offers a few documented ways for companion programs (for example Agent Guard) to work with it. Sentinel Vision never imports a companion by
-name and has no dependency on one; the companion uses the entry point and the command-line tools below. Everything
+Sentinel Vision offers a few documented ways for companion programs (for example [Foldward](https://github.com/dylanckoldan-boop/Foldward), formerly
+Agent Guard) to work with it. Sentinel Vision never imports a companion by name and has no dependency on one; the companion uses the entry point and the command-line tools below. Everything
 here is optional: with no plugin installed, Sentinel Vision behaves exactly as before.
 
 | What | How | Protected on Windows |
@@ -46,6 +46,12 @@ it can't stop Sentinel Vision.
   py -3.12 -m pip install --target "C:\Program Files\Sentinel Vision\plugins\my-plugin" my-plugin
   ```
 
+  For Foldward:
+
+  ```
+  py -3.12 -m pip install --target "C:\Program Files\Sentinel Vision\plugins\foldward" "git+https://github.com/dylanckoldan-boop/Foldward"
+  ```
+
   Before loading, Sentinel Vision checks every folder and file of the plugin. If anyone other than SYSTEM,
   Administrators or TrustedInstaller could change them, the plugin is refused, because otherwise a program running
   with your rights could put code inside the antivirus. The installed app contains only the parts of Python it uses
@@ -75,7 +81,7 @@ sentinel-vision-cli quarantine add PATH [--reason TEXT] [--source NAME]
 The file is **moved**: encrypted into the quarantine exactly like an automatic detection (AES-256-GCM, checked chunk
 by chunk; on Windows into the protection service's storage) and the original deleted. On success the command prints
 only the new item's id and exits with 0. On any problem it exits with 2 and nothing changes. The reason is shown as
-the threat name and the source (default `agent-guard`) as the engine, `external:<source>`. The item can be restored
+the threat name and the source (default `foldward`; `agent-guard` before 0.5.1) as the engine, `external:<source>`. The item can be restored
 or deleted like any other (`quarantine restore ID`, `quarantine delete ID`). On Windows with the protection service,
 restoring needs administrator approval (since 0.5.0): `quarantine restore` shows the administrator prompt itself.
 
@@ -125,3 +131,33 @@ Adds inbound and outbound block rules to the system firewall (Windows Firewall, 
 internet addresses are accepted: private, local, link-local, multicast and documentation addresses are refused.
 It needs administrator (root) rights; without them it prints the commands to run and exits with 2. It exits with 0
 when the rules were added.
+
+## Foldward, formerly Agent Guard (0.5.1)
+
+Agent Guard was renamed Foldward. What changed and what didn't:
+
+| | Before | Now |
+|---|---|---|
+| Entry point in `sentinel_vision.plugins` | `agent_guard` | `foldward` (value `foldward.gui.plugin:register`) |
+| Plugin folder (installed Windows app) | `plugins\agent-guard\` | `plugins\foldward\` |
+| `quarantine add` default `--source` | `agent-guard` | `foldward` |
+| Plugin log name used by Foldward | `agent-guard` | `foldward` |
+
+Unchanged, and kept that way: the `sentinel_vision.plugins` group and `plugin_api.API_VERSION` (1); the command
+shapes `quarantine add PATH --reason TEXT`, `plugin-log append NAME --json …`, `plugin-log verify NAME`,
+`net block IP` and `scan PATH --no-quarantine --json`; their exit codes (0 success or intact, 1 broken chain or threats
+found, 2 error); and the 32-character hexadecimal quarantine id. Foldward's page keys stay `ag_*`.
+
+**Existing records stay where they are.** The `agent-guard` log is never removed or renamed: `plugin-log read
+agent-guard` and `plugin-log verify agent-guard` keep working, and Foldward reads it alongside its new `foldward`
+log. The two are separate hash chains. Nothing is copied from one to the other, because copied entries would carry
+new times and process ids and could no longer prove when and by whom the originals were written. Quarantined items
+added before the rename keep `external:agent-guard` as their engine.
+
+**After upgrading, on the installed Windows app:**
+
+1. Install Foldward into `plugins\foldward` with the command above, from an administrator terminal.
+2. Remove the old folder, so the old copy isn't loaded first (its pages use the same keys, and the first one found
+   wins): `Remove-Item -Recurse "C:\Program Files\Sentinel Vision\plugins\agent-guard"`.
+3. Open Sentinel Vision and allow Foldward when asked. A renamed plugin is a new plugin, so it needs your
+   (administrator) approval once; the old approval no longer matches anything.

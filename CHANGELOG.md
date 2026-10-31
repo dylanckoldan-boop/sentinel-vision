@@ -3,6 +3,28 @@
 All notable changes to Sentinel Vision are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] - 2026-10-31
+
+Released together with Foldward's switch to its new name. Older Foldward versions (still writing as `agent-guard`)
+keep working with this release.
+
+### Changed
+- **Agent Guard is now Foldward.** `quarantine add` records `foldward` as the requesting program by default (items
+  added before keep `agent-guard`), the docs install Foldward into `plugins\foldward`, and the Windows install test
+  uses the new name. Plugins are still found by iterating the `sentinel_vision.plugins` entry-point group, never by
+  name.
+- Nothing Foldward relies on changed: command shapes and exit codes, the 32-character quarantine id, the
+  entry-point group and `plugin_api.API_VERSION` (1).
+
+### Kept
+- The `agent-guard` plugin log is never removed or renamed and stays readable and verifiable next to the new
+  `foldward` log (separate hash chains; see "Foldward, formerly Agent Guard" in `docs/PLUGINS.md`).
+
+### Notes
+- On the installed Windows app, remove the old `plugins\agent-guard` folder after installing Foldward, and allow
+  Foldward once when asked: a renamed plugin needs administrator approval again.
+- `THIRD_PARTY_NOTICES.txt` is now also published as a release file, covered by the signed checksums.
+
 ## [0.5.0] - 2026-10-27
 
 This release closes the findings of the October 2026 readiness audit (IDs in brackets; the full list with the code

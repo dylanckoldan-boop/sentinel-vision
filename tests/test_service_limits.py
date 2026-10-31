@@ -116,18 +116,18 @@ def test_changing_requests_are_rate_limited(core, monkeypatch):
     monkeypatch.setattr(servicecore.time, "time", lambda: frozen)
     core._buckets.clear()
     for _ in range(servicecore.RATE_BURST):
-        core.handle(ALICE, "plugin.append", {"name": "agent-guard", "record": {"n": 1}})
+        core.handle(ALICE, "plugin.append", {"name": "foldward", "record": {"n": 1}})
     with pytest.raises(ServiceError) as exc:
-        core.handle(ALICE, "plugin.append", {"name": "agent-guard", "record": {"n": 2}})
+        core.handle(ALICE, "plugin.append", {"name": "foldward", "record": {"n": 2}})
     assert exc.value.code == "too_many"
     core.handle(ALICE, "ping", {})  # reading is never limited
 
 
-def test_agent_guard_can_append_ten_records_a_second(core, monkeypatch):
+def test_foldward_can_append_ten_records_a_second(core, monkeypatch):
     clock = [servicecore.time.time()]
     monkeypatch.setattr(servicecore.time, "time", lambda: clock[0])
     for _ in range(600):  # one minute at 10 per second
-        core.handle(ALICE, "plugin.append", {"name": "agent-guard", "record": {"ok": True}})
+        core.handle(ALICE, "plugin.append", {"name": "foldward", "record": {"ok": True}})
         clock[0] += 0.1
 
 
@@ -136,7 +136,7 @@ def test_the_client_waits_and_retries_when_rate_limited(core):
 
     t = LocalTransport(core, ALICE)
     for _ in range(servicecore.RATE_BURST + 20):  # more than the burst: later ones wait briefly
-        t.call("plugin.append", {"name": "agent-guard", "record": {}})
+        t.call("plugin.append", {"name": "foldward", "record": {}})
 
 
 def test_system_refresh_at_most_every_ten_minutes(core):

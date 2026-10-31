@@ -236,7 +236,7 @@ foreach ($u in 'https://api.github.com/', 'https://www.spamhaus.org/drop/drop.tx
 }
 
 # ------------------------------------------------------------------------------------------------ companion programs
-Progress "tools for companion programs (Agent Guard): quarantine add, plugin log, net block, plugins"
+Progress "tools for companion programs (Foldward): quarantine add, plugin log, net block, plugins"
 $tool = Join-Path $docs 'agent-tool.exe'
 Set-Content -Path $tool -Value 'MZ harmless test file for quarantine add' -NoNewline
 $qid = ((SvCli @('quarantine', 'add', $tool, '--reason', 'installer test')) -split "`r?`n" | Where-Object { $_ -match '^[0-9a-f]{32}$' } | Select-Object -Last 1)
@@ -246,12 +246,16 @@ SvCli @('quarantine', 'restore', $qid) | Out-Null
 Assert ((Get-Content $tool -Raw) -eq 'MZ harmless test file for quarantine add') "the added item restores intact"
 Remove-Item $tool -Force
 
-SvCli @('plugin-log', 'append', 'agent-guard', '--json', '{"event":"installer-test","n":1}') | Out-Null
-SvCli @('plugin-log', 'append', 'agent-guard', '--json', '{"event":"installer-test","n":2}') | Out-Null
-$v = SvCli @('plugin-log', 'verify', 'agent-guard')
+SvCli @('plugin-log', 'append', 'foldward', '--json', '{"event":"installer-test","n":1}') | Out-Null
+SvCli @('plugin-log', 'append', 'foldward', '--json', '{"event":"installer-test","n":2}') | Out-Null
+$v = SvCli @('plugin-log', 'verify', 'foldward')
 Assert ($v -match '"intact": true' -and $v -match '"entries": 2' -and $v -match '"protected": true') "plugin log kept by the protection service, chain intact ($v)"
 $sid = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
-Assert (Test-Path (Join-Path $data "users\$sid\plugins\agent-guard\log.jsonl")) "plugin log stored in the protected folder"
+Assert (Test-Path (Join-Path $data "users\$sid\plugins\foldward\log.jsonl")) "plugin log stored in the protected folder"
+# records written under Foldward's former name stay readable and verifiable next to the new log
+SvCli @('plugin-log', 'append', 'agent-guard', '--json', '{"event":"legacy"}') | Out-Null
+$legacy = SvCli @('plugin-log', 'verify', 'agent-guard')
+Assert ($legacy -match '"intact": true' -and $legacy -match '"entries": 1' -and (SvCli @('plugin-log', 'verify', 'foldward')) -match '"entries": 2') "the legacy agent-guard log is kept separately and verifies ($legacy)"
 
 $ip = '45.12.10.9'
 SvCli @('net', 'block', $ip) | Out-Null
