@@ -130,7 +130,7 @@ def cmd_update(sv: Sentinel, _args) -> int:
 def cmd_quarantine(sv: Sentinel, args) -> int:
     q = sv.quarantine
     if args.action == "add":
-        # for other programs (e.g. Agent Guard): prints only the new id on success; exit 2 with a message otherwise
+        # for other programs (e.g. Foldward): prints only the new id on success; exit 2 with a message otherwise
         from sentinel_vision.quarantine import QuarantineError
 
         try:
@@ -674,11 +674,11 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("id", nargs="?", help="item ID (restore, delete) or file path (add)")
     q.add_argument("--to", help="restore into this folder")
     q.add_argument("--reason", help="add: why the file is being quarantined")
-    q.add_argument("--source", default="agent-guard", help="add: name of the program asking (default agent-guard)")
+    q.add_argument("--source", default="foldward", help="add: name of the program asking (default foldward)")
     sub.add_parser("plugins", help="list plugins and whether they are allowed")
     pl = sub.add_parser("plugin-log", help="append-only records for plugins (protected on Windows)")
     pl.add_argument("action", choices=["append", "read", "verify"])
-    pl.add_argument("name", help="plugin name, e.g. agent-guard")
+    pl.add_argument("name", help="plugin name, e.g. foldward")
     pl.add_argument("--json", help="append: the record as a JSON object (default: read from standard input)")
     pl.add_argument("--since", type=int, default=0, help="read: entries after this sequence number")
     pl.add_argument("--limit", type=int, default=1000)

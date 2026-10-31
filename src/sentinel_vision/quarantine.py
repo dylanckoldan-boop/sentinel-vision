@@ -58,10 +58,12 @@ class QuarantineItem:
 
 # ---------------------------------------------------------------------------------------------- external requests
 EXTERNAL_SOURCE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,39}$")
+# the companion program that asks by default (Foldward, formerly Agent Guard; older items say "agent-guard")
+DEFAULT_EXTERNAL_SOURCE = "foldward"
 
 
 def external_labels(reason: str, source: str) -> tuple[str, str]:
-    """(threat, engine) recorded for a file another program asked to quarantine (for example Agent Guard)."""
+    """(threat, engine) recorded for a file another program asked to quarantine (for example Foldward)."""
     if not EXTERNAL_SOURCE_RE.match(source or ""):
         raise QuarantineError("source must be a short lower-case name (letters, digits, . _ -)")
     text = " ".join(str(reason or "").split())[:200]
@@ -133,7 +135,7 @@ class Quarantine:
             raise QuarantineError(f"could not remove original file: {exc}") from exc
         return item
 
-    def add_external(self, path: str | Path, reason: str = "", source: str = "agent-guard") -> str:
+    def add_external(self, path: str | Path, reason: str = "", source: str = DEFAULT_EXTERNAL_SOURCE) -> str:
         """Quarantine a file another program found (moved: encrypted here, original removed). Returns the id."""
         threat, engine = external_labels(reason, source)
         return self.add(external_target(path), threat, engine).id
