@@ -3,6 +3,42 @@
 All notable changes to Sentinel Vision are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.2] - 2026-10-31
+
+Closes the Sentinel Vision findings of the 31 October 2026 audit (IDs in brackets) and publishes the command-line
+contract companion programs rely on. Released together with Foldward 0.2.0, which needs this version: it is the first
+Foldward that reads the new exit code 3 as final; older Foldward versions treat it as an error.
+
+### Security
+- **A flood of new files can't fill the rollback vault for good [SV-N01].** A fifth of the vault is kept for documents
+  it already holds (whose first version is more than 24 hours old), so their edits are still kept while new files are
+  refused. First versions of new files also count against an hourly byte budget (a quarter of the vault, and at least
+  twice the per-file limit), not only a count.
+- **A full vault is a lasting warning [SV-N01].** Once the vault refuses a version for lack of room, the dashboard and
+  the Ransomware page say so until the largest version it refused would fit again, across restarts. A small file that
+  still fits doesn't clear the warning. The service's `vault.stats` answer reports it as `full_since`.
+- **`quarantine add` refuses on purpose with exit code 3 [INT-01, INT-04].** Links and other files that aren't regular
+  files, operating-system files and Sentinel Vision's own files are refused with exit 3, so the companion program
+  knows not to move the file some other way. Any other problem is still exit 2. Nothing changes in either case.
+- **The old Agent Guard plugin is refused [INT-07].** A plugin named `agent-guard` is listed with the reason and never
+  loaded: it carries code with security problems that Foldward 0.2.0 fixes, would keep its old approval, and registers
+  the same pages. When `plugins\foldward` exists, the Windows installer also deletes `plugins\agent-guard`.
+
+### Companion programs
+- **`quarantine add --reason TEXT -- PATH` works on every supported Python [INT-01].** On Python 3.10, 3.11 and 3.12
+  before 3.12.7, argparse rejected an option before the path, so the contract's form failed with exit 2 on source
+  installs. Each `quarantine` action now has its own parser; `quarantine add PATH --reason TEXT` keeps working.
+- New `docs/plugin-contract.json`: the command shapes, exit codes and example answers companion programs rely on.
+  `tests/test_plugin_contract.py` runs the real tool against it on every change; Foldward keeps a copy and replays its
+  examples [INT-01].
+- `docs/PLUGINS.md`: `--` before every file name and address, the exit-code table, the `scan` command, and the
+  Foldward install command pinned to a release tag (`v0.2.0`) instead of the moving `main` branch [INT-06].
+
+### Documents
+- New `docs/NAME_CLEARANCE.md`: the checks so far on the name "Sentinel Vision" and what is left for the owner,
+  including why the name can't be registered on PyPI [SV-E05].
+- README and the claims register describe the vault reserve and the contract.
+
 ## [0.5.1] - 2026-10-31
 
 Released together with Foldward's switch to its new name. Older Foldward versions (still writing as `agent-guard`)

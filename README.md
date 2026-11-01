@@ -110,11 +110,14 @@ sentinel-vision-cli daemon                      # headless real-time + behavior 
 For companion programs and plugins (see [docs/PLUGINS.md](docs/PLUGINS.md)):
 
 ```bash
-sentinel-vision-cli quarantine add FILE --reason "why"   # move a file into the quarantine, prints its id
+sentinel-vision-cli quarantine add --reason "why" -- FILE # move a file into the quarantine, prints its id
 sentinel-vision-cli plugin-log append NAME --json '{...}' # append-only records (protected on Windows)
-sentinel-vision-cli net block 45.12.10.9                  # block a public address in the firewall (admin)
+sentinel-vision-cli net block -- 45.12.10.9               # block a public address in the firewall (admin)
 sentinel-vision-cli plugins                               # plugins found, allowed or refused
 ```
+
+`quarantine add` exits with `3` when it refuses a file on purpose (a link, an operating-system file, or Sentinel
+Vision's own files). The full contract, with every exit code, is [docs/plugin-contract.json](docs/plugin-contract.json).
 
 Exit codes: `0` clean · `1` threats found · `2` error — handy for CI pipelines and cron jobs.
 
@@ -151,7 +154,7 @@ Security software is a high-value target, so Sentinel Vision is built defensivel
 * **Encrypted quarantine.** AES-256-GCM with a per-install key stored owner-only; per-chunk nonces and authenticated position/final-chunk flags detect tampering, reordering and truncation; restores are verified against the original SHA-256 and never overwrite existing files.
 * **Post-quantum signed updates.** Release checksums are signed with ML-DSA-65 (NIST FIPS 204) and Ed25519; both must verify, and the app refuses unsigned or older installers. Stored data uses AES-256-GCM, which keeps 128-bit security even against quantum computers. Details in [the comparison](docs/COMPARISON.md#post-quantum-design).
 * **Careful automatic actions.** Only signature-confirmed malware and the actual backup-deletion tools are ended automatically; heuristic and technique alerts are report-only by default. Pattern matches on validly signed programs, caches and app databases, installed programs' folders, and anything short of an exact match on operating-system files, are reported rather than removed.
-* **Tamper protection (Windows).** Installed in Program Files (only administrators can change it). The protection service (LocalSystem) keeps each account's vault, quarantine and protection settings in a folder with a protected SYSTEM/Administrators-only ACL that it re-checks (and refuses to follow links in) at every start; each account only reaches its own data; the service only stores and returns bytes and never writes into users' folders; weakening changes and restoring a quarantined file need an elevated caller; the vault only keeps files from your protected folders, is rate-limited and never evicts recent versions to make room for new ones; its named pipe rejects remote clients, and the app only talks to a pipe owned by a Windows service (session 0). Machine-wide blocking uses lists the service downloads itself, never lists supplied by other programs, and never blocks local networks, ranges wider than /16, DNS resolvers or the feed publishers. App updates are installed by the service after it verifies the signed checksums, so no administrator prompt is needed.
+* **Tamper protection (Windows).** Installed in Program Files (only administrators can change it). The protection service (LocalSystem) keeps each account's vault, quarantine and protection settings in a folder with a protected SYSTEM/Administrators-only ACL that it re-checks (and refuses to follow links in) at every start; each account only reaches its own data; the service only stores and returns bytes and never writes into users' folders; weakening changes and restoring a quarantined file need an elevated caller; the vault only keeps files from your protected folders, is rate-limited and never evicts recent versions to make room for new ones, keeps a fifth of its space for documents it already holds (so a flood of new files can't fill it for good) and is a lasting dashboard warning while it is full; its named pipe rejects remote clients, and the app only talks to a pipe owned by a Windows service (session 0). Machine-wide blocking uses lists the service downloads itself, never lists supplied by other programs, and never blocks local networks, ranges wider than /16, DNS resolvers or the feed publishers. App updates are installed by the service after it verifies the signed checksums, so no administrator prompt is needed.
 * **Plugins only with consent.** Plugin pages load only from an administrator-only folder (installed Windows app) after a permission check, and only after the user allowed each one — with the service, that needs administrator approval. A broken plugin is skipped, never fatal. Details in [docs/PLUGINS.md](docs/PLUGINS.md).
 * **Fails safe when the service is down (Windows).** If the protection service is installed but not running, the app shows a red warning, keeps protection settings at least at their defaults, refuses weakening changes, and retries every 15 seconds. It never falls back to storing protected data in your own folder.
 * **No shell, ever.** External tools (`netsh`, `iptables`, `clamscan`, `freshclam`, `taskkill`) are called with argument lists; IPs are validated before any firewall rule is built; private/loopback addresses can't be blocked.
@@ -180,6 +183,7 @@ replacement for an OS-integrated antivirus — keep Microsoft Defender / XProtec
 * Network throughput is system-wide; per-process bandwidth isn't available portably yet.
 * System-wide website blocking uses the hosts file and blocks whole host names (not individual pages). Browsers set to their own "secure DNS only" mode can skip it — the Security checkup tells you if one is.
 * The rollback vault lives on the same disk as your documents. On Windows other programs can't reach it, but a disk failure or ransomware with administrator rights could still destroy it. Keep an offline/cloud backup too.
+* When the rollback vault is full, new versions aren't kept until there is room again. The dashboard warns you until then; raise its size limit in Settings or review the vault.
 * On macOS, scanning protected folders needs Full Disk Access and seeing every process's connections needs admin rights.
 * Detection quality depends on the feeds and rules you enable — keep definitions updated and add ClamAV.
 

@@ -134,7 +134,28 @@ def _dist_fingerprint(dist) -> str:
 # ---------------------------------------------------------------------------------------------- discovery
 def discover() -> list[FoundPlugin]:
     root = plugins_root()
-    return _discover_folder(root) if root is not None else _discover_python()
+    return _refuse_superseded(_discover_folder(root) if root is not None else _discover_python())
+
+
+# Agent Guard was renamed Foldward (0.5.1). The old package carries code with known security problems (fixed in
+# Foldward 0.2.0), keeps its old approval and registers the same `ag_*` pages, so it is never loaded (INT-07).
+SUPERSEDED = {"agent-guard": "Foldward"}
+
+
+def _canon(name: str) -> str:
+    return name.strip().lower().replace("_", "-")
+
+
+def _refuse_superseded(found: list[FoundPlugin]) -> list[FoundPlugin]:
+    for f in found:
+        newer = SUPERSEDED.get(_canon(f.name))
+        if newer and not f.problem:
+            f.problem = (
+                f"{f.name} was renamed {newer}, and this old copy has known security problems; install {newer} "
+                "(docs/PLUGINS.md) and remove this folder"
+            )
+            log.warning("plugin %s refused: %s", f.name, f.problem)
+    return found
 
 
 def _discover_python() -> list[FoundPlugin]:

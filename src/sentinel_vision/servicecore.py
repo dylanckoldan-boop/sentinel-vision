@@ -698,7 +698,12 @@ class ServiceCore:
 
     def op_vault_stats(self, c: Caller, a: dict, p: bytes) -> dict:
         v = self.vault(c.sid)
-        return {"stats": list(v.stats()), "max_total": v.max_total, "max_file": v.max_file}
+        return {
+            "stats": list(v.stats()),
+            "max_total": v.max_total,
+            "max_file": v.max_file,
+            "full_since": v.full_since(),
+        }
 
     def op_vault_plan(self, c: Caller, a: dict, p: bytes) -> dict:
         return {"plan": [list(x) for x in self.vault(c.sid).rollback_plan(float(a["since"]), str(a.get("folder", "")))]}

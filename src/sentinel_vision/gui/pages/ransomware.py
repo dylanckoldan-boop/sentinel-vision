@@ -41,6 +41,11 @@ class RansomwarePage(Page):
         for c in (self.c_state, self.c_files, self.c_size, self.c_incidents):
             stats.addWidget(c)
         self.root.addLayout(stats)
+        # shown while the vault refuses new versions for lack of room (SV-N01)
+        self.full_note = label("", wrap=True)
+        self.full_note.setStyleSheet(f"color:{theme.WARN};")
+        self.full_note.setVisible(False)
+        self.root.addWidget(self.full_note)
 
         tabs = QTabWidget()
         # ---- incidents
@@ -142,6 +147,14 @@ class RansomwarePage(Page):
         files, versions, used = self.s.vault.stats()
         self.c_files.set(f"{files:,}", f"{versions:,} versions")
         self.c_size.set(bytes_human(used), f"limit {bytes_human(self.s.vault.max_total)}")
+        full = self.s.vault.full_since()
+        self.full_note.setVisible(bool(full))
+        if full:
+            self.full_note.setText(
+                f"The rollback vault is full: since {fmt_ts(full)} some new versions of your documents weren't kept. "
+                "Review the files below (a program changing many files is a warning sign) or raise the vault's size "
+                "limit in Settings."
+            )
         n = len(rw.incidents)
         self.c_incidents.set(str(n), "this session", theme.DANGER if n else theme.OK)
         sel = self._selected_incident()

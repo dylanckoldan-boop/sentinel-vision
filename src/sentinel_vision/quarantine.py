@@ -33,6 +33,12 @@ class QuarantineError(RuntimeError):
     pass
 
 
+class QuarantineRefused(QuarantineError):
+    """A file another program asked to quarantine was refused on purpose (an operating-system file, Sentinel
+    Vision's own files, a link or another non-regular file). The CLI exits 3 for it, so the asking program knows
+    not to move the file some other way (plugin contract, docs/PLUGINS.md)."""
+
+
 class QuarantineNeedsApproval(QuarantineError):
     """Restoring this item needs administrator approval (Windows protection service, audit finding SV-A04)."""
 
@@ -77,16 +83,20 @@ def external_target(path: str | Path) -> Path:
     from sentinel_vision.scanner import is_system_path
 
     src = Path(path)
-    if src.is_symlink() or not src.is_file():
-        raise QuarantineError(f"not an existing regular file: {src}")
+    if src.is_symlink():
+        raise QuarantineRefused(f"links are never quarantined on request: {src}")
+    if not src.exists():
+        raise QuarantineError(f"not an existing file: {src}")
+    if not src.is_file():
+        raise QuarantineRefused(f"not a regular file: {src}")
     full = src.resolve()
     if is_system_path(str(full)):
-        raise QuarantineError("operating-system files are never quarantined on request")
+        raise QuarantineRefused("operating-system files are never quarantined on request")
     own = [data_dir().resolve()]
     if getattr(sys, "frozen", False):
         own.append(Path(sys.executable).resolve().parent)
     if any(full == d or d in full.parents for d in own):
-        raise QuarantineError("Sentinel Vision's own files can't be quarantined")
+        raise QuarantineRefused("Sentinel Vision's own files can't be quarantined")
     return full
 
 

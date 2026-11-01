@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS versions (
 CREATE INDEX IF NOT EXISTS versions_path ON versions(path, ts);
 CREATE INDEX IF NOT EXISTS versions_sha ON versions(sha256);
 CREATE INDEX IF NOT EXISTS versions_ts ON versions(ts);
+CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 """
 
 
@@ -170,6 +171,11 @@ DAILY_UNTIL = 30 * 24 * 3600  # then one per day for 30 days (older ones go, exc
 FILE_RATE = 30  # new versions per file per hour
 ACCOUNT_RATE = 2000  # new versions per account (vault) per hour, of files already in the vault
 FIRST_RATE = 50_000  # first versions of files per hour (these can't push anything out; the start-up pass uses them)
+# First versions can never fill the whole vault (SV-N01): a share of it is kept for new versions of files the vault
+# has protected for more than 24 hours, and first versions count against a byte budget per hour. Otherwise a program
+# could store junk "first versions" of made-up file names until the vault refused every later edit of real documents.
+RESERVE_SHARE = 0.20  # of the vault: only new versions of files kept for more than 24 hours may use it
+FIRST_BYTES_SHARE = 0.25  # of the vault: the most first-version bytes stored per hour (at least two largest files)
 
 
 def _is_link(p: Path) -> bool:
@@ -192,6 +198,10 @@ class VaultFiles:
 
     max_file: int
     max_total: int
+
+    def full_since(self) -> float | None:
+        """When the vault started refusing versions for lack of room (None: it has room, or isn't available)."""
+        return None
 
     # storage back end ------------------------------------------------------------------------------------
     def store(self, key: str, data: bytes, mtime: float, force: bool = False) -> Version | None:  # pragma: no cover
@@ -323,6 +333,7 @@ class RollbackVault(VaultFiles):
         self._recent: dict[str, list[float]] = {}  # key -> times of new versions in the last hour
         self._recent_all: list[float] = []
         self._recent_first: list[float] = []
+        self._recent_first_bytes: list[tuple[float, int]] = []
         self._db = sqlite3.connect(str(self.root / "index.db"), check_same_thread=False, timeout=30)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(SCHEMA)
@@ -386,13 +397,24 @@ class RollbackVault(VaultFiles):
             if last and last[0] == sha:
                 return None
             now = time.time()
-            self._check_rate(key, now, first=last is None)
+            first = last is None
+            self._check_rate(key, now, first=first, size=len(data))
             if not self._db.execute("SELECT 1 FROM versions WHERE sha256=? LIMIT 1", (sha,)).fetchone():
-                fits = self.used_bytes() + len(data) <= self.max_total
-                if not fits and (preserve or not self._make_room(len(data), now)):
+                kind = "total" if (preserve or self._established(key, now)) else "open"
+                limit = self._limit(kind)
+                fits = self.used_bytes() + len(data) <= limit
+                if not fits and (preserve or not self._make_room(len(data), now, limit)):
+                    self._mark_full(now, kind, len(data))
+                    if kind == "open":
+                        raise VaultRefused(
+                            "the rollback vault has no room for more new files (a share is kept for new versions "
+                            "of documents it already protects); this version was not kept (nothing was removed). "
+                            "Review the vault or raise its size limit."
+                        )
                     raise VaultRefused(
-                        "the rollback vault is full of recent versions; this version was not kept (nothing was "
-                        "removed). Raise the vault size limit or check for a program changing many files."
+                        "the rollback vault is full: it never removes a version younger than 24 hours or a file's "
+                        "newest version, so this version was not kept (nothing was removed). Review the vault or "
+                        "raise its size limit, and check for a program changing many files."
                     )
             self._put_blob(sha, data)
             cur = self._db.execute(
@@ -401,20 +423,78 @@ class RollbackVault(VaultFiles):
             )
             self._db.commit()
             self._recent.setdefault(key, []).append(now)
-            (self._recent_first if last is None else self._recent_all).append(now)
+            (self._recent_first if first else self._recent_all).append(now)
+            if first:
+                self._recent_first_bytes.append((now, len(data)))
             vid = int(cur.lastrowid)
             if not preserve:
                 self._thin(key, now)
+            self._clear_full_if_room()
         return Version(vid, key, sha, len(data), float(mtime), now, int(suspect))
 
-    def _check_rate(self, key: str, now: float, first: bool = False) -> None:
+    def _open_limit(self) -> int:
+        """How much of the vault first versions and young files may fill (the rest is the reserve)."""
+        return int(self.max_total * (1 - RESERVE_SHARE))
+
+    def _limit(self, kind: str) -> int:
+        """ "total": the whole vault (documents it has protected for more than 24 hours); "open": everything else."""
+        return self.max_total if kind == "total" else self._open_limit()
+
+    def _established(self, key: str, now: float) -> bool:
+        """True when the vault has protected this file for more than 24 hours."""
+        row = self._db.execute("SELECT MIN(ts) FROM versions WHERE path=?", (key,)).fetchone()
+        return bool(row and row[0] is not None and row[0] < now - KEEP_ALL_SECONDS)
+
+    # A refused version leaves a lasting mark, so the app keeps warning (SV-N01). The mark remembers the largest
+    # version refused under each limit and is cleared only once that version would fit, never by a later version
+    # that happened to fit: otherwise a program could hide the warning by storing a tiny file after each refusal.
+    def _mark_full(self, now: float, kind: str, size: int) -> None:
+        since, needs = self._full_mark()
+        rows = [] if since is not None else [("full_since", repr(now))]
+        if size > needs.get(kind, -1):
+            rows.append((f"need_{kind}", str(size)))
+        if rows:
+            self._db.executemany("INSERT OR REPLACE INTO meta(k, v) VALUES (?, ?)", rows)
+            self._db.commit()
+
+    def _clear_full_if_room(self) -> None:
+        since, needs = self._full_mark()
+        if since is None:
+            return
+        used = self.used_bytes()
+        if all(used + need <= self._limit(kind) for kind, need in needs.items()):
+            self._db.execute("DELETE FROM meta WHERE k IN ('full_since', 'need_open', 'need_total')")
+            self._db.commit()
+
+    def _full_mark(self) -> tuple[float | None, dict[str, int]]:
+        rows = dict(self._db.execute("SELECT k, v FROM meta WHERE k IN ('full_since', 'need_open', 'need_total')"))
+        try:
+            since = float(rows["full_since"]) if "full_since" in rows else None
+            needs = {k.removeprefix("need_"): int(v) for k, v in rows.items() if k.startswith("need_")}
+        except ValueError:
+            return None, {}
+        return since, needs
+
+    def full_since(self) -> float | None:
+        """When the vault started refusing versions for lack of room, or None while it has room."""
+        with self._lock:
+            return self._full_mark()[0]
+
+    def _check_rate(self, key: str, now: float, first: bool = False, size: int = 0) -> None:
         hour = now - 3600
         self._recent[key] = recent = [t for t in self._recent.get(key, []) if t > hour]
         self._recent_all = [t for t in self._recent_all if t > hour]
         self._recent_first = [t for t in self._recent_first if t > hour]
+        self._recent_first_bytes = [(t, b) for t, b in self._recent_first_bytes if t > hour]
         if first:
             if len(self._recent_first) >= FIRST_RATE:
                 raise VaultRefused(f"more than {FIRST_RATE} new files in an hour (possible vault flooding)")
+            budget = max(int(self.max_total * FIRST_BYTES_SHARE), 2 * self.max_file)
+            if sum(b for _, b in self._recent_first_bytes) + size > budget:
+                raise VaultRefused(
+                    f"more than {budget // (1024 * 1024)} MB of new files in an hour (possible vault flooding); "
+                    "this file will be kept when it next changes"
+                )
             return
         if len(recent) >= FILE_RATE:
             raise VaultRefused(f"more than {FILE_RATE} new versions of this file in an hour (possible vault flooding)")
@@ -441,22 +521,23 @@ class RollbackVault(VaultFiles):
             self._db.commit()
             self._gc()
 
-    def _make_room(self, size: int, now: float) -> bool:
-        """Make room for ``size`` more bytes by removing versions older than 24 hours (suspect ones first, then
-        the oldest), never a file's newest version. False when that isn't enough (young versions are never
-        removed)."""
+    def _make_room(self, size: int, now: float, limit: int | None = None) -> bool:
+        """Make room for ``size`` more bytes within ``limit`` (default: the whole vault) by removing versions older
+        than 24 hours (suspect ones first, then the oldest), never a file's newest version. False when that isn't
+        enough (young versions are never removed)."""
+        limit = self.max_total if limit is None else limit
         rows = self._db.execute(
             "SELECT id FROM versions WHERE ts < ? AND id NOT IN (SELECT MAX(id) FROM versions GROUP BY path) "
             "ORDER BY suspect DESC, ts ASC",
             (now - KEEP_ALL_SECONDS,),
         ).fetchall()
         for (vid,) in rows:
-            if self.used_bytes() + size <= self.max_total:
+            if self.used_bytes() + size <= limit:
                 break
             self._db.execute("DELETE FROM versions WHERE id=?", (vid,))
         self._db.commit()
         self._gc()
-        return self.used_bytes() + size <= self.max_total
+        return self.used_bytes() + size <= limit
 
     def read(self, version_id: int) -> tuple[Version, bytes]:
         v = self.get(version_id)
@@ -494,6 +575,7 @@ class RollbackVault(VaultFiles):
                 self._thin(k, now)
             if self.used_bytes() > self.max_total:
                 self._make_room(0, now)
+            self._clear_full_if_room()
 
     def _gc(self) -> None:
         live = {r[0] for r in self._db.execute("SELECT DISTINCT sha256 FROM versions")}

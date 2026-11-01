@@ -110,6 +110,15 @@ class DashboardPage(Page):
                 f"{threats_24h} threat(s) found today",
                 "Review them in History. Signature hits were quarantined automatically.",
             )
+        full = s.vault.full_since() if s.settings.ransomware_enabled else None
+        if full:  # a lasting warning while the rollback vault refuses versions (SV-N01)
+            return (
+                "warn",
+                "The rollback vault is full",
+                f"Some new versions of your documents weren't kept (the first was refused {ago(full)}). This "
+                "stays until there is room again: review it under Ransomware → Rollback vault, or raise its size "
+                "limit in Settings.",
+            )
         if time.time() - last > 7 * 86400:
             return "warn", "Definitions are out of date", f"Last update: {ago(last)}. Click “Update definitions”."
         rw_off = not s.settings.ransomware_enabled or (s.settings.ransomware_folders and not s.ransomware.running)
