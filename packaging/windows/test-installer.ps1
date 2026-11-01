@@ -239,7 +239,8 @@ foreach ($u in 'https://api.github.com/', 'https://www.spamhaus.org/drop/drop.tx
 Progress "tools for companion programs (Foldward): quarantine add, plugin log, net block, plugins"
 $tool = Join-Path $docs 'agent-tool.exe'
 Set-Content -Path $tool -Value 'MZ harmless test file for quarantine add' -NoNewline
-$qid = ((SvCli @('quarantine', 'add', $tool, '--reason', 'installer test')) -split "`r?`n" | Where-Object { $_ -match '^[0-9a-f]{32}$' } | Select-Object -Last 1)
+# the exact form Foldward uses (docs/plugin-contract.json), on the Python bundled with the app
+$qid = ((SvCli @('quarantine', 'add', '--reason', 'installer test', '--', $tool)) -split "`r?`n" | Where-Object { $_ -match '^[0-9a-f]{32}$' } | Select-Object -Last 1)
 Assert ($qid -and -not (Test-Path $tool)) "quarantine add moved the file into protected storage ($qid)"
 Assert ((SvCli @('quarantine', 'list')) -match $qid) "the added item is listed"
 SvCli @('quarantine', 'restore', $qid) | Out-Null
