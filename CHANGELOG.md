@@ -6,8 +6,8 @@ All notable changes to Sentinel Vision are listed here. The format follows
 ## [0.5.2] - 2026-10-31
 
 Closes the Sentinel Vision findings of the 31 October 2026 audit (IDs in brackets) and publishes the command-line
-contract companion programs rely on. Released together with Foldward 0.2.0, the first Foldward that reads the new exit
-code 3 as final; older Foldward versions treat it as an error.
+contract companion programs rely on. Released together with Foldward 0.2.0, which needs this version: it is the first
+Foldward that reads the new exit code 3 as final; older Foldward versions treat it as an error.
 
 ### Security
 - **A flood of new files can't fill the rollback vault for good [SV-N01].** A fifth of the vault is kept for documents
@@ -25,6 +25,9 @@ code 3 as final; older Foldward versions treat it as an error.
   the same pages. When `plugins\foldward` exists, the Windows installer also deletes `plugins\agent-guard`.
 
 ### Companion programs
+- **`quarantine add --reason TEXT -- PATH` works on every supported Python [INT-01].** On Python 3.10, 3.11 and 3.12
+  before 3.12.7, argparse rejected an option before the path, so the contract's form failed with exit 2 on source
+  installs. Each `quarantine` action now has its own parser; `quarantine add PATH --reason TEXT` keeps working.
 - New `docs/plugin-contract.json`: the command shapes, exit codes and example answers companion programs rely on.
   `tests/test_plugin_contract.py` runs the real tool against it on every change; Foldward keeps a copy and replays its
   examples [INT-01].

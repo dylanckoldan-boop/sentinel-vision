@@ -12,7 +12,9 @@ here is optional: with no plugin installed, Sentinel Vision behaves exactly as b
 | Block an address | `sentinel-vision-cli net block -- IP` | Needs administrator rights |
 | Check a file | `sentinel-vision-cli scan --no-quarantine --json -- PATH` | Read-only |
 
-Put `--` before any file name or address, so a name that starts with `-` can never be read as an option.
+Put `--` before any file name or address, so a name that starts with `-` can never be read as an option. (Before
+0.5.2, `quarantine add --reason TEXT -- PATH` failed on Python 3.10, 3.11 and early 3.12 source installs; companion
+programs should require 0.5.2.)
 
 **The contract (since 0.5.2).** These command shapes, their exit codes and their output are also published as a
 machine-readable file, [`docs/plugin-contract.json`](plugin-contract.json). `tests/test_plugin_contract.py` runs the

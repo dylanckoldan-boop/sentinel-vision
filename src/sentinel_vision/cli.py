@@ -677,11 +677,19 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--json", action="store_true")
     sub.add_parser("update", help="download latest definitions")
     q = sub.add_parser("quarantine", help="manage quarantine")
-    q.add_argument("action", choices=["list", "restore", "delete", "add"])
-    q.add_argument("id", nargs="?", help="item ID (restore, delete) or file path (add)")
-    q.add_argument("--to", help="restore into this folder")
-    q.add_argument("--reason", help="add: why the file is being quarantined")
-    q.add_argument("--source", default="foldward", help="add: name of the program asking (default foldward)")
+    # One parser per action, each with a required positional, so options may come before the path and `--` works on
+    # every supported Python: with an optional positional, argparse before 3.12.7 rejected `add --reason TEXT -- PATH`.
+    qa = q.add_subparsers(dest="action", required=True, metavar="{list,restore,delete,add}")
+    qa.add_parser("list", help="list quarantined items")
+    qr = qa.add_parser("restore", help="restore an item")
+    qr.add_argument("id", help="item ID (see `quarantine list`)")
+    qr.add_argument("--to", help="restore into this folder")
+    qd = qa.add_parser("delete", help="delete an item for good")
+    qd.add_argument("id", help="item ID (see `quarantine list`)")
+    qadd = qa.add_parser("add", help="move a file into the quarantine (for companion programs, docs/PLUGINS.md)")
+    qadd.add_argument("id", metavar="PATH", help="the file to quarantine; put -- before it")
+    qadd.add_argument("--reason", help="why the file is being quarantined")
+    qadd.add_argument("--source", default="foldward", help="name of the program asking (default foldward)")
     sub.add_parser("plugins", help="list plugins and whether they are allowed")
     pl = sub.add_parser("plugin-log", help="append-only records for plugins (protected on Windows)")
     pl.add_argument("action", choices=["append", "read", "verify"])
@@ -751,7 +759,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     args = build_parser().parse_args(argv)
     setup_logging(args.verbose)
-    if args.command == "quarantine" and args.action != "list" and not args.id:
+    if args.command == "quarantine" and args.action != "list" and not getattr(args, "id", None):
         print("quarantine restore/delete needs an ID (see `quarantine list`); add needs a file path", file=sys.stderr)
         return 2
     if args.command == "rollback" and args.action != "list" and not args.target:

@@ -85,6 +85,24 @@ def test_quarantine_add(tmp_path, capsys, isolated_home, monkeypatch):
     assert "operating-system files" in err and g.exists()
 
 
+@pytest.mark.parametrize(
+    ("argv", "path"),
+    [
+        (["quarantine", "add", "--reason", "r", "--", "-agent.bin"], "-agent.bin"),  # the contract's form
+        (["quarantine", "add", "--reason", "r", "--source", "foldward", "--", "/x/a.bin"], "/x/a.bin"),
+        (["quarantine", "add", "/x/a.bin", "--reason", "r"], "/x/a.bin"),  # the form documented before 0.5.2
+        (["quarantine", "add", "--reason", "r", "/x/a.bin"], "/x/a.bin"),
+    ],
+)
+def test_quarantine_add_parses_on_every_supported_python(argv, path):
+    # argparse before 3.12.7 rejected an option before an optional positional; each action now has its own parser
+    from sentinel_vision.cli import build_parser
+
+    args = build_parser().parse_args(argv)
+
+    assert (args.action, args.id, args.reason) == ("add", path, "r")
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="creating links needs extra rights on Windows")
 def test_quarantine_add_refuses_a_link(tmp_path, capsys, isolated_home):
     target = tmp_path / "real.bin"
