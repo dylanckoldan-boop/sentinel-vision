@@ -65,10 +65,10 @@ it can't stop Sentinel Vision.
   ```
 
   For Foldward, name a release tag, never the moving `main` branch, so what you install is what was reviewed and
-  released (Foldward 0.2.0 is the first release that works with the 0.5.2 contract and refusals):
+  released (Foldward 0.2.0 and newer work with the 0.5.2 contract and refusals; 0.2.1 also fixes a canary flaw):
 
   ```
-  py -3.12 -m pip install --target "C:\Program Files\Sentinel Vision\plugins\foldward" "foldward @ git+https://github.com/dylanckoldan-boop/Foldward@v0.2.0"
+  py -3.12 -m pip install --target "C:\Program Files\Sentinel Vision\plugins\foldward" "foldward @ git+https://github.com/dylanckoldan-boop/Foldward@v0.2.1"
   ```
 
   To upgrade it later, run the same command with `--upgrade` and the newer tag, then allow Foldward again when asked.
