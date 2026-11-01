@@ -88,6 +88,8 @@ Source: "migrate-user-install.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
 [InstallDelete]
 ; remove files of the previous version so stale libraries never mix with new ones
 Type: filesandordirs; Name: "{app}\_internal"
+; Agent Guard was renamed Foldward: once Foldward is installed, the old copy (pre-fix code, old approval) goes (INT-07)
+Type: filesandordirs; Name: "{app}\plugins\agent-guard"; Check: FoldwardPluginInstalled
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Comment: "Open-source antimalware"
@@ -224,6 +226,11 @@ end;
 
 var
   HadUserInstall: Boolean;
+
+function FoldwardPluginInstalled(): Boolean;
+begin
+  Result := DirExists(ExpandConstant('{app}\plugins\foldward'));
+end;
 
 function ServiceUpdate(): Boolean;
 begin

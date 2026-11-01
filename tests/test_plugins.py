@@ -192,3 +192,20 @@ def test_foldward_is_found_in_its_own_folder_by_iterating_the_group(tmp_path, mo
     assert [ep.name for ep in f.entry_points] == ["foldward"]
     assert [p.key for p in plugins.load_pages(f)] == ["ag_dashboard"]
     assert f.fingerprint.startswith("foldward@1.0#")  # a new name: the user allows it once more
+
+
+def test_the_old_agent_guard_plugin_is_refused(tmp_path, monkeypatch):
+    """INT-07: Agent Guard was renamed Foldward. The old copy carries code with known security problems, keeps its
+    old approval and registers the same `ag_*` pages, so it is refused, with the reason shown in the plugin list."""
+    from sentinel_vision import plugins
+
+    root = tmp_path / "Program Files" / "Sentinel Vision" / "plugins"
+    make_plugin(root / "agent-guard", name="agent_guard", key="ag_dashboard")
+    make_plugin(root / "foldward", name="foldward", key="ag_dashboard")
+    monkeypatch.setattr(plugins, "plugins_root", lambda: root)
+    monkeypatch.setattr(plugins, "admin_only_problem", lambda p: "")
+
+    old, new = plugins.discover()
+
+    assert not old.loadable and "renamed Foldward" in old.problem
+    assert new.loadable and new.name == "foldward"

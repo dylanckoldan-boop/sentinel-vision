@@ -7,9 +7,25 @@ here is optional: with no plugin installed, Sentinel Vision behaves exactly as b
 | What | How | Protected on Windows |
 |---|---|---|
 | A page inside the app | Python entry point `sentinel_vision.plugins` | Loaded only from an administrator-only folder, after the user allowed it |
-| Hand a file to the quarantine | `sentinel-vision-cli quarantine add PATH --reason TEXT` | Stored by the protection service |
-| Keep records nothing else can erase | `sentinel-vision-cli plugin-log append NAME` | Append-only, kept by the protection service |
-| Block an address | `sentinel-vision-cli net block IP` | Needs administrator rights |
+| Hand a file to the quarantine | `sentinel-vision-cli quarantine add --reason TEXT -- PATH` | Stored by the protection service |
+| Keep records nothing else can erase | `sentinel-vision-cli plugin-log append NAME --json RECORD` | Append-only, kept by the protection service |
+| Block an address | `sentinel-vision-cli net block -- IP` | Needs administrator rights |
+| Check a file | `sentinel-vision-cli scan --no-quarantine --json -- PATH` | Read-only |
+
+Put `--` before any file name or address, so a name that starts with `-` can never be read as an option.
+
+**The contract (since 0.5.2).** These command shapes, their exit codes and their output are also published as a
+machine-readable file, [`docs/plugin-contract.json`](plugin-contract.json). `tests/test_plugin_contract.py` runs the
+real tool against it on every change, and Foldward keeps a copy and replays its examples in its own tests, so a change
+that would break a companion program fails a test on one side or the other. The file changes only together with
+`plugin_api.API_VERSION` and a note here.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Success: done, chain intact, or no threats found |
+| 1 | An answer that isn't success: threats found (`scan`) or a broken chain (`plugin-log verify`) |
+| 2 | Error: nothing changed. The caller may try again or use its own fallback |
+| 3 | Refused on purpose (`quarantine add`, since 0.5.2): nothing changed, and the caller must not do it some other way |
 
 ## A page inside the app
 
@@ -46,11 +62,14 @@ it can't stop Sentinel Vision.
   py -3.12 -m pip install --target "C:\Program Files\Sentinel Vision\plugins\my-plugin" my-plugin
   ```
 
-  For Foldward:
+  For Foldward, name a release tag, never the moving `main` branch, so what you install is what was reviewed and
+  released (Foldward 0.2.0 is the first release that works with the 0.5.2 contract and refusals):
 
   ```
-  py -3.12 -m pip install --target "C:\Program Files\Sentinel Vision\plugins\foldward" "git+https://github.com/dylanckoldan-boop/Foldward"
+  py -3.12 -m pip install --target "C:\Program Files\Sentinel Vision\plugins\foldward" "foldward @ git+https://github.com/dylanckoldan-boop/Foldward@v0.2.0"
   ```
+
+  To upgrade it later, run the same command with `--upgrade` and the newer tag, then allow Foldward again when asked.
 
   Before loading, Sentinel Vision checks every folder and file of the plugin. If anyone other than SYSTEM,
   Administrators or TrustedInstaller could change them, the plugin is refused, because otherwise a program running
@@ -75,18 +94,20 @@ A plugin runs inside Sentinel Vision with the same rights. Only allow plugins yo
 ## Hand a file to the quarantine
 
 ```
-sentinel-vision-cli quarantine add PATH [--reason TEXT] [--source NAME]
+sentinel-vision-cli quarantine add [--reason TEXT] [--source NAME] -- PATH
 ```
 
 The file is **moved**: encrypted into the quarantine exactly like an automatic detection (AES-256-GCM, checked chunk
 by chunk; on Windows into the protection service's storage) and the original deleted. On success the command prints
-only the new item's id and exits with 0. On any problem it exits with 2 and nothing changes. The reason is shown as
-the threat name and the source (default `foldward`; `agent-guard` before 0.5.1) as the engine, `external:<source>`. The item can be restored
+only the new item's id (32 hexadecimal characters) and exits with 0. The reason is shown as the threat name and the
+source (default `foldward`; `agent-guard` before 0.5.1) as the engine, `external:<source>`. The item can be restored
 or deleted like any other (`quarantine restore ID`, `quarantine delete ID`). On Windows with the protection service,
 restoring needs administrator approval (since 0.5.0): `quarantine restore` shows the administrator prompt itself.
 
-Refused: anything that isn't an existing regular file (folders, links), operating-system files, and Sentinel Vision's
-own program or data.
+Refused on purpose, with exit code 3 (since 0.5.2; exit 2 before): links and anything else that isn't a regular file
+(folders, pipes, devices), operating-system files, and Sentinel Vision's own program or data. A refused file must not
+be moved some other way. Any other problem (the file doesn't exist, the protection service can't be reached) exits
+with 2. In both cases nothing changes, and the reason is printed to standard error after `error:`.
 
 From Python: `Sentinel().quarantine.add_external(path, reason, source)` returns the id.
 
@@ -124,13 +145,24 @@ folder for a plugin, in your own data folder; it is not protected from other pro
 ## Block an address
 
 ```
-sentinel-vision-cli net block IP
+sentinel-vision-cli net block -- IP
 ```
 
 Adds inbound and outbound block rules to the system firewall (Windows Firewall, iptables or nftables). Only public
-internet addresses are accepted: private, local, link-local, multicast and documentation addresses are refused.
-It needs administrator (root) rights; without them it prints the commands to run and exits with 2. It exits with 0
-when the rules were added.
+internet addresses are accepted: private, local, link-local, multicast and documentation addresses are refused with
+exit code 2. It needs administrator (root) rights; without them it prints the commands to run and exits with 2. It
+exits with 0 when the rules were added.
+
+## Check a file
+
+```
+sentinel-vision-cli scan --no-quarantine --json -- PATH
+```
+
+Scans without moving anything and prints a JSON summary (`scanned`, `infected`, `threats`, `review`, `errors`,
+`duration`, `results`). It exits with 0 when no threats were found and 1 when at least one was; it exits with 2 only
+when the command itself fails. A file that couldn't be read is counted in `errors`, not as a threat, so a caller
+should check `errors` too, and check that `threats` agrees with the exit code.
 
 ## Foldward, formerly Agent Guard (0.5.1)
 
@@ -144,9 +176,10 @@ Agent Guard was renamed Foldward. What changed and what didn't:
 | Plugin log name used by Foldward | `agent-guard` | `foldward` |
 
 Unchanged, and kept that way: the `sentinel_vision.plugins` group and `plugin_api.API_VERSION` (1); the command
-shapes `quarantine add PATH --reason TEXT`, `plugin-log append NAME --json …`, `plugin-log verify NAME`,
-`net block IP` and `scan PATH --no-quarantine --json`; their exit codes (0 success or intact, 1 broken chain or threats
-found, 2 error); and the 32-character hexadecimal quarantine id. Foldward's page keys stay `ag_*`.
+shapes `quarantine add --reason TEXT -- PATH`, `plugin-log append NAME --json …`, `plugin-log verify NAME`,
+`net block -- IP` and `scan --no-quarantine --json -- PATH`; their exit codes (0 success or intact, 1 broken chain or
+threats found, 2 error, and since 0.5.2 3 for a file `quarantine add` refused on purpose); and the 32-character
+hexadecimal quarantine id. Foldward's page keys stay `ag_*`.
 
 **Existing records stay where they are.** The `agent-guard` log is never removed or renamed: `plugin-log read
 agent-guard` and `plugin-log verify agent-guard` keep working, and Foldward reads it alongside its new `foldward`
@@ -157,7 +190,13 @@ added before the rename keep `external:agent-guard` as their engine.
 **After upgrading, on the installed Windows app:**
 
 1. Install Foldward into `plugins\foldward` with the command above, from an administrator terminal.
-2. Remove the old folder, so the old copy isn't loaded first (its pages use the same keys, and the first one found
-   wins): `Remove-Item -Recurse "C:\Program Files\Sentinel Vision\plugins\agent-guard"`.
+2. Remove the old folder: `Remove-Item -Recurse "C:\Program Files\Sentinel Vision\plugins\agent-guard"`.
 3. Open Sentinel Vision and allow Foldward when asked. A renamed plugin is a new plugin, so it needs your
    (administrator) approval once; the old approval no longer matches anything.
+
+**The old Agent Guard plugin is refused (since 0.5.2).** A plugin named `agent-guard` (in a folder or in the Python
+environment) is listed by `sentinel-vision-cli plugins` with the reason and never loaded: it carries code with
+security problems that Foldward 0.2.0 fixes, it would keep its old approval, and it registers the same pages as
+Foldward. When you upgrade the installed Windows app to 0.5.2 or later and `plugins\foldward` exists, the installer
+also deletes `plugins\agent-guard`. If Foldward isn't installed yet, the old folder stays where it is, refused, until
+you install Foldward and remove it as above.

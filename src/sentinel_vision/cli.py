@@ -130,11 +130,18 @@ def cmd_update(sv: Sentinel, _args) -> int:
 def cmd_quarantine(sv: Sentinel, args) -> int:
     q = sv.quarantine
     if args.action == "add":
-        # for other programs (e.g. Foldward): prints only the new id on success; exit 2 with a message otherwise
-        from sentinel_vision.quarantine import QuarantineError
+        # for other programs (e.g. Foldward): prints only the new id on success; exit 3 when the file is refused on
+        # purpose (don't move it some other way), exit 2 for any other problem; nothing changes in either case
+        from sentinel_vision.quarantine import QuarantineError, QuarantineRefused
 
+        if not args.id:
+            print("usage: quarantine add [--reason TEXT] [--source NAME] [--] PATH", file=sys.stderr)
+            return 2
         try:
             item_id = q.add_external(args.id, args.reason or "", args.source)
+        except QuarantineRefused as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 3
         except (QuarantineError, OSError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
