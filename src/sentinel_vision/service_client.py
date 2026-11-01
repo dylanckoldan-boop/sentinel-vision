@@ -374,6 +374,13 @@ class RemoteVault(VaultFiles):
     def files(self, limit: int = 5000) -> list[tuple[str, int, float]]:
         return [tuple(r) for r in self.t.call("vault.files", {"limit": limit})[0]["files"]]  # type: ignore[misc]
 
+    def full_since(self) -> float | None:
+        try:
+            value = self.t.call("vault.stats")[0].get("full_since")  # absent from services older than 0.5.2
+        except (ServiceError, OSError):  # display only: an unreachable service is reported elsewhere
+            return None
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
     def stats(self) -> tuple[int, int, int]:
         r = self.t.call("vault.stats")[0]
         self._max_total = int(r["max_total"])
