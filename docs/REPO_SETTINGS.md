@@ -35,7 +35,8 @@ approval.
 Settings → Environments → `release` (check by hand):
 
 - [ ] Required reviewers: the owner
-- [ ] Deployment branches and tags: tags matching `v*` only
+- [ ] Deployment branches and tags: `main` and tags matching `v*` only (`main` is needed for the "Run workflow" →
+      Publish path, which creates the tag itself)
 - [ ] Move the `SV_SIGNING_KEY` secret from repository secrets into this environment's secrets, then delete the
       repository-level copy, so no other workflow can read it
 
