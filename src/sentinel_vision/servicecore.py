@@ -24,6 +24,7 @@ import secrets
 import shutil
 import threading
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -296,7 +297,7 @@ class Caller:
 class Event:
     ts: float
     sid: str
-    kind: str  # refused | changed | watchdog | system
+    kind: str  # refused | changed | watchdog | system | warning
     detail: str
     seq: int = 0  # increases by one per event; clients ask for events after the last seq they saw
 
@@ -338,6 +339,17 @@ class SystemApplier:
         raise ServiceError("unsupported", "updates are installed by the Windows protection service")
 
 
+def _program_name(pid: int) -> str:
+    """'C:\\path\\to\\program.exe (process 1234)' while the process runs, else 'process 1234'."""
+    try:
+        import psutil
+
+        exe = psutil.Process(pid).exe()
+    except Exception:
+        exe = ""
+    return f"{exe} (process {pid})" if exe else f"process {pid}"
+
+
 class ServiceCore:
     def __init__(self, root: Path, applier: SystemApplier | None = None) -> None:
         self.root = Path(root)
@@ -350,6 +362,8 @@ class ServiceCore:
         self._vaults: dict[str, RollbackVault] = {}
         self._quarantines: dict[str, Quarantine] = {}
         self._plugin_logs: dict = {}
+        self._log_writers: dict[tuple[str, str], Counter] = {}  # (sid, plugin) -> records added per process id
+        self._log_warned: dict[tuple[str, str, bool], float] = {}  # (sid, plugin, full) -> when last reported
         self._last_refusal: dict = {}
         self._released: dict[tuple[str, str], float] = {}
         self._buckets: dict[str, list[float]] = {}  # sid -> [tokens, last time]
@@ -604,18 +618,59 @@ class ServiceCore:
             return log_
 
     def op_plugin_append(self, c: Caller, a: dict, p: bytes) -> dict:
-        """Add a record to the caller's own log for a plugin. Records can be added, never changed or removed."""
-        from sentinel_vision.pluginlog import PluginLogError
+        """Add a record to the caller's own log for a plugin. Records can be added, never changed or removed.
 
+        Any program running as the user may add to any of the user's plugin logs, so one could fill a log to keep a
+        plugin's later records out. A log that passes WARN_SHARE of its limit, or refuses a record because it is
+        full, is reported to the user with the programs that added most of its records (INT-N01)."""
+        from sentinel_vision.pluginlog import MAX_LOG, WARN_SHARE, PluginLogError
+
+        name = str(a.get("name", ""))
+        log_ = self._plugin_log(c.sid, name)
         try:
-            return self._plugin_log(c.sid, str(a.get("name", ""))).append(
-                a.get("record"), pid=c.pid, elevated=c.elevated
-            )
+            r = log_.append(a.get("record"), pid=c.pid, elevated=c.elevated)
         except PluginLogError as exc:
+            if str(exc).startswith("log is full"):
+                self._report_log_filling(c.sid, name, log_.size(), full=True)
             raise ServiceError("bad_request", str(exc)) from exc
+        with self._lock:
+            writers = self._log_writers.setdefault((c.sid, name), Counter())
+            writers[c.pid] += 1
+            if len(writers) > 1000:  # many short-lived processes: keep the ones that wrote most
+                self._log_writers[(c.sid, name)] = Counter(dict(writers.most_common(500)))
+        if r["bytes"] >= WARN_SHARE * MAX_LOG:
+            self._report_log_filling(c.sid, name, r["bytes"], full=False)
+        return r
+
+    def _report_log_filling(self, sid: str, name: str, used: int, *, full: bool) -> None:
+        """Tell the user a plugin log is nearly full (at most once a day) or full (at most once an hour)."""
+        from sentinel_vision.pluginlog import MAX_LOG
+
+        now = time.time()
+        with self._lock:
+            if now - self._log_warned.get((sid, name, full), 0) < (3600 if full else 86400):
+                return
+            self._log_warned[(sid, name, full)] = now
+            top = self._log_writers.get((sid, name), Counter()).most_common(3)
+        writers = "; ".join(f"{_program_name(pid)}: {n} record(s)" for pid, n in top)
+        source = (
+            f"Since Sentinel Vision started, most of its records came from {writers}."
+            if writers
+            else "Its records were added before Sentinel Vision last started."
+        )
+        if full:
+            what = f"The protected record log '{name}' is full, so new records can't be added to it."
+        else:
+            what = f"The protected record log '{name}' is {min(99, round(100 * used / MAX_LOG))}% full."
+        self._event(
+            sid,
+            "warning",
+            f"{what} {source} Any program running as you can add records, so it may be filling up on purpose. "
+            "docs/PLUGINS.md says how an administrator makes room.",
+        )
 
     def op_plugin_read(self, c: Caller, a: dict, p: bytes) -> dict:
-        from sentinel_vision.pluginlog import PluginLogError
+        from sentinel_vision.pluginlog import MAX_LOG, PluginLogError
 
         sid = str(a.get("sid", c.sid))
         if sid != c.sid and not c.elevated:
@@ -626,7 +681,7 @@ class ServiceCore:
             ok, count = log_.verify() if a.get("verify") else (None, None)
         except PluginLogError as exc:
             raise ServiceError("bad_request", str(exc)) from exc
-        return {"entries": entries, "intact": ok, "count": count}
+        return {"entries": entries, "intact": ok, "count": count, "bytes": log_.size(), "limit": MAX_LOG}
 
     # ------------------------------------------------------------------ rollback vault
     @staticmethod

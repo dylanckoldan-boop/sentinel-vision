@@ -116,7 +116,8 @@ def test_quarantine_add_refuses_a_link(tmp_path, capsys, isolated_home):
     assert target.exists()
 
 
-def test_plugin_log(capsys, isolated_home):
+def test_plugin_log(capsys, isolated_home, monkeypatch):
+    from sentinel_vision import pluginlog
     from sentinel_vision.config import sub_dir
 
     append, verify = _cases("plugin-log append"), _cases("plugin-log verify")
@@ -126,6 +127,12 @@ def test_plugin_log(capsys, isolated_home):
     _check(append["error"], code, out)
     code, out, _ = _run(capsys, ["plugin-log", "verify", "foldward"])
     _check(verify["intact"], code, out)
+
+    monkeypatch.setattr(pluginlog, "MAX_LOG", 1)  # since 0.5.3 a companion program can tell a full log apart
+    code, out, err = _run(capsys, ["plugin-log", "append", "foldward", "--json", '{"event": "pacify"}'])
+    _check(append["full"], code, out)
+    assert err == append["full"]["example_stderr"]
+    monkeypatch.undo()
 
     _run(capsys, ["plugin-log", "append", "foldward", "--json", '{"event": "second"}'])
     log = sub_dir("plugins") / "foldward" / "log.jsonl"

@@ -98,10 +98,31 @@ class PluginLog:
 
     def verify(self) -> tuple[bool, int]:
         """(chain intact, number of entries)."""
+        r = self.verify_report()
+        return r["intact"], r["entries"]
+
+    def verify_report(self) -> dict:
+        """``intact`` and ``entries`` as :meth:`verify`, plus how full the log is: ``bytes`` (None from a protection
+        service older than 0.5.3) and ``limit``. Any program running as the user can add records, so a log that is
+        nearly full may be being filled on purpose (INT-N01)."""
+        from sentinel_vision.pluginlog import MAX_LOG
+
         if self._t is not None:
-            r = self._t.call("plugin.read", {"name": self.name, "since": 0, "limit": 1, "verify": True})[0]
-            return bool(r["intact"]), int(r["count"])
-        return self._local.verify()
+            from sentinel_vision.servicecore import ServiceError
+
+            try:
+                r = self._t.call("plugin.read", {"name": self.name, "since": 0, "limit": 1, "verify": True})[0]
+            except ServiceError as exc:
+                raise PluginLogError(str(exc)) from exc
+            size, limit = r.get("bytes"), r.get("limit")
+            return {
+                "intact": bool(r["intact"]),
+                "entries": int(r["count"]),
+                "bytes": size if isinstance(size, int) and not isinstance(size, bool) else None,
+                "limit": limit if isinstance(limit, int) and not isinstance(limit, bool) else MAX_LOG,
+            }
+        ok, count = self._local.verify()
+        return {"intact": ok, "entries": count, "bytes": self._local.size(), "limit": MAX_LOG}
 
 
 def plugin_log(name: str) -> PluginLog:

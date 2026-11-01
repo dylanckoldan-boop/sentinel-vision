@@ -258,6 +258,8 @@ class MainWindow(QMainWindow):
                 self.sentinel.alert("Protection change blocked", ev.get("detail", ""), "danger")
             elif ev.get("kind") == "watchdog":
                 self.sentinel.alert("Sentinel Vision was restarted", ev.get("detail", ""), "warning")
+            elif ev.get("kind") == "warning":  # for example a plugin's protected log filling up (INT-N01)
+                self.sentinel.alert("Protected record log", ev.get("detail", ""), "warning")
 
     def stop_timers(self) -> None:
         for t in self.findChildren(QTimer):

@@ -370,9 +370,9 @@ def cmd_plugin_log(_sv, args) -> int:
             for e in log_.read(args.since, args.limit):
                 print(json.dumps(e, sort_keys=True))
         else:
-            ok, count = log_.verify()
-            print(json.dumps({"intact": ok, "entries": count, "protected": log_.protected}))
-            return 0 if ok else 1
+            r = log_.verify_report()  # intact, entries, bytes, limit
+            print(json.dumps({**r, "protected": log_.protected}))
+            return 0 if r["intact"] else 1
     except (PluginLogError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

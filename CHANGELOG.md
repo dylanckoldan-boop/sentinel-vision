@@ -3,6 +3,27 @@
 All notable changes to Sentinel Vision are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.3] - 2026-11-01
+
+Closes Sentinel Vision's side of integration finding INT-N01 from the 1 November 2026 review. Released together with
+Foldward 0.2.2, which uses it; Foldward 0.2.0 and 0.2.1 keep working with it.
+
+### Security
+- **A plugin log that is nearly full, or full, is reported [INT-N01].** Any program running as you can add records to
+  your plugin logs, so one could fill a log (50 MB) to keep a companion program's later records out. On Windows the
+  protection service now warns you when a log passes 80% and when it refuses a record because it is full, naming the
+  programs that added most of its records since the service started. `docs/PLUGINS.md` says how an administrator makes
+  room while keeping the full log as evidence.
+- **The 50 MB limit counts whole entries [INT-N01].** It counted only each record, so a log could grow past the limit,
+  and a small record still fitted after a larger one was refused.
+
+### Companion programs
+- `plugin-log verify NAME` also reports the log's size (`bytes`) and `limit`, so a companion program can see a log
+  filling up. `docs/plugin-contract.json` lists them, and the "log is full" error of `plugin-log append`.
+- `plugin-log verify` reports a protection service it can't reach as an error (exit 2). It used to crash, and a crash
+  exits with 1, the code for a broken chain.
+- `docs/PLUGINS.md`: what to do when a log is full, and the Foldward install pinned to `v0.2.2`.
+
 ## [0.5.2] - 2026-10-31
 
 Closes the Sentinel Vision findings of the 31 October 2026 audit (IDs in brackets) and publishes the command-line

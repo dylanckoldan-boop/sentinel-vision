@@ -177,6 +177,106 @@ def test_plugin_log_through_the_service_is_per_account_and_cannot_be_rewritten(c
     ]
 
 
+def test_the_log_limit_counts_whole_entries(tmp_path, monkeypatch):
+    """INT-N01: the limit counted only the record, so a log grew past it and tiny records still fitted."""
+    from sentinel_vision import pluginlog
+    from sentinel_vision.pluginlog import AppendOnlyLog, PluginLogError
+
+    monkeypatch.setattr(pluginlog, "MAX_LOG", 2000)
+    log = AppendOnlyLog(tmp_path / "log.jsonl")
+    assert log.size() == 0
+    sizes = []
+    with pytest.raises(PluginLogError, match="^log is full"):
+        for i in range(100):
+            sizes.append(log.append({"n": i})["bytes"])
+    assert sizes[-1] == log.size() == (tmp_path / "log.jsonl").stat().st_size <= 2000
+    with pytest.raises(PluginLogError, match="^log is full"):
+        log.append({})  # an empty record is still a whole entry
+    assert log.size() == sizes[-1] and log.verify() == (True, len(sizes))
+
+
+def test_a_filling_plugin_log_is_reported_with_the_programs_that_wrote_it(core, monkeypatch):
+    """INT-N01: any program running as the user can add records, so a log that is nearly full or full is reported
+    to that user, naming the processes that added most of it; at most once a day (nearly full) or an hour (full)."""
+    from sentinel_vision import pluginlog
+    from sentinel_vision.servicecore import Caller, ServiceError
+
+    monkeypatch.setattr(pluginlog, "MAX_LOG", 3000)
+    flooder = Caller(ALICE.sid, pid=4242, session=1)
+
+    def warnings(caller):
+        return [e["detail"] for e in core.handle(caller, "events", {})[0]["events"] if e["kind"] == "warning"]
+
+    core.handle(ALICE, "plugin.append", {"name": "foldward", "record": {"event": "pacify"}})
+    assert warnings(ALICE) == []
+    with pytest.raises(ServiceError, match="log is full"):
+        for _ in range(100):
+            core.handle(flooder, "plugin.append", {"name": "foldward", "record": {"pad": "x" * 100}})
+    nearly, full = warnings(ALICE)
+    assert "'foldward' is 8" in nearly or "'foldward' is 9" in nearly
+    assert "'foldward' is full" in full and "process 4242" in full and "on purpose" in full
+    assert full.index("process 4242") < full.index(f"process {ALICE.pid}")  # most records first
+    with pytest.raises(ServiceError):
+        core.handle(ALICE, "plugin.append", {"name": "foldward", "record": {"event": "pacify"}})
+    assert len(warnings(ALICE)) == 2  # not repeated within the hour
+    assert warnings(BOB) == []  # only the account whose log it is
+    report = core.handle(ALICE, "plugin.read", {"name": "foldward", "limit": 1, "verify": True})[0]
+    assert report["intact"] is True and report["limit"] == 3000 and 2800 < report["bytes"] <= 3000
+
+
+def test_plugin_log_verify_reports_how_full_the_log_is(core, capsys, isolated_home):
+    import json
+
+    from sentinel_vision.cli import main
+    from sentinel_vision.config import sub_dir
+    from sentinel_vision.plugin_api import PluginLog
+    from sentinel_vision.pluginlog import MAX_LOG
+    from sentinel_vision.service_client import LocalTransport
+
+    assert main(["plugin-log", "append", "foldward", "--json", '{"event": "test"}']) == 0
+    capsys.readouterr()
+    assert main(["plugin-log", "verify", "foldward"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert (
+        report["bytes"] == (sub_dir("plugins") / "foldward" / "log.jsonl").stat().st_size and report["limit"] == MAX_LOG
+    )
+
+    through_service = PluginLog("foldward", LocalTransport(core, ALICE))
+    through_service.append({"event": "test"})
+    r = through_service.verify_report()
+    assert r["intact"] is True and r["entries"] == 1 and r["bytes"] > 0 and r["limit"] == MAX_LOG
+
+
+def test_plugin_log_verify_reports_an_unreachable_service_as_an_error(monkeypatch, capsys):
+    from sentinel_vision import plugin_api
+    from sentinel_vision.cli import main
+    from sentinel_vision.servicecore import ServiceError
+
+    class Down:
+        def call(self, op, args=None, payload=b""):
+            raise ServiceError("unavailable", "the protection service didn't answer")
+
+    monkeypatch.setattr(plugin_api, "plugin_log", lambda name: plugin_api.PluginLog(name, Down()))
+
+    assert main(["plugin-log", "verify", "foldward"]) == 2  # an error, not a traceback
+    assert capsys.readouterr().err.startswith("error:")
+
+
+def test_service_warnings_are_shown_to_the_user():
+    pytest.importorskip("PySide6")
+    import types
+
+    from sentinel_vision.gui.app import MainWindow
+
+    shown = []
+    window = types.SimpleNamespace(
+        _service_task=object(), sentinel=types.SimpleNamespace(alert=lambda *a: shown.append(a))
+    )
+    MainWindow._service_events(window, [{"kind": "warning", "detail": "The protected record log 'foldward' is full."}])
+
+    assert shown == [("Protected record log", "The protected record log 'foldward' is full.", "warning")]
+
+
 def test_plugin_log_refuses_to_fall_back_when_the_service_is_installed_but_down(monkeypatch):
     from sentinel_vision import plugin_api, service_client
 

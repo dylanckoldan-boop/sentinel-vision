@@ -19,8 +19,9 @@ programs should require 0.5.2.)
 **The contract (since 0.5.2).** These command shapes, their exit codes and their output are also published as a
 machine-readable file, [`docs/plugin-contract.json`](plugin-contract.json). `tests/test_plugin_contract.py` runs the
 real tool against it on every change, and Foldward keeps a copy and replays its examples in its own tests, so a change
-that would break a companion program fails a test on one side or the other. The file changes only together with
-`plugin_api.API_VERSION` and a note here.
+that would break a companion program fails a test on one side or the other. Additions keep `plugin_api.API_VERSION`;
+a change that breaks callers raises it. Every change gets a note here: 0.5.3 added `bytes` and `limit` to
+`plugin-log verify` and the "log is full" error of `plugin-log append`.
 
 | Exit code | Meaning |
 |---|---|
@@ -65,10 +66,11 @@ it can't stop Sentinel Vision.
   ```
 
   For Foldward, name a release tag, never the moving `main` branch, so what you install is what was reviewed and
-  released (Foldward 0.2.0 and newer work with the 0.5.2 contract and refusals; 0.2.1 also fixes a canary flaw):
+  released (Foldward 0.2.0 and newer work with the 0.5.2 contract and refusals; 0.2.1 fixes a canary flaw; 0.2.2 keeps
+  records it couldn't copy to its protected log, across restarts, and treats a full log as possible tampering):
 
   ```
-  py -3.12 -m pip install --target "C:\Program Files\Sentinel Vision\plugins\foldward" "foldward @ git+https://github.com/dylanckoldan-boop/Foldward@v0.2.1"
+  py -3.12 -m pip install --target "C:\Program Files\Sentinel Vision\plugins\foldward" "foldward @ git+https://github.com/dylanckoldan-boop/Foldward@v0.2.2"
   ```
 
   To upgrade it later, run the same command with `--upgrade` and the newer tag, then allow Foldward again when asked.
@@ -131,6 +133,33 @@ the service is installed but not reachable, the command fails instead of writing
 
 On macOS, Linux and the portable build, the same format is kept in your own data folder. It is tamper-*evident*
 (`verify` shows edits) but not tamper-proof.
+
+**A full log may be full on purpose.** Any program running as you can add records to any of your plugin logs (it
+still can't change or delete them), so a program could fill a log to keep a companion program's later records out.
+Since 0.5.3 the 50 MB counts whole entries, `plugin-log verify` also reports the log's size (`bytes`) and `limit`, and
+on Windows the protection service warns you when a log passes 80% (at most once a day) and when it refuses a record
+because it is full (at most once an hour). The warning names the programs that added most of the log's records since
+the service started. A companion program should treat a full log as possible tampering and keep the records it
+couldn't add until there is room; Foldward 0.2.2 does.
+
+### When a log is full
+
+First see what filled it: `sentinel-vision-cli plugin-log read NAME` lists every entry, each with the process id that
+added it. Records from a program you don't recognise are evidence, so keep them.
+
+To make room on Windows, from an administrator PowerShell (replace `NAME`, and `<account>` with your account's
+security identifier, which `whoami /user` shows):
+
+```
+Stop-Service SentinelVisionService
+$log = "$env:ProgramData\SentinelVision\Service\users\<account>\plugins\NAME"
+Rename-Item "$log\log.jsonl" "log-full-$(Get-Date -Format yyyyMMdd-HHmmss).jsonl"
+Start-Service SentinelVisionService
+```
+
+The renamed file stays in the protected folder for whoever investigates. The next record starts a new chain, which is
+what `plugin-log verify` checks from then on, and Foldward adds the records it kept. On macOS, Linux and the portable
+build, close Sentinel Vision and Foldward, then move `log.jsonl` out of `plugins/NAME` in your data folder.
 
 ### Limits (Windows protection service, since 0.5.0)
 
