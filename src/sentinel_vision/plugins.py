@@ -101,6 +101,11 @@ def admin_only_problem(path: Path) -> str:
             if mask & WRITE_MASK and who not in TRUSTED_SIDS and who != CREATOR_OWNER:
                 return f"{path} can be changed by {who}"
     except Exception as exc:  # can't tell: don't load
+        if getattr(exc, "winerror", None) == 5 or (exc.args and exc.args[0] == 5):  # access denied
+            return (
+                f"could not check permissions of {path}: your account can't read it. pip leaves files only "
+                "administrators can read; reset them as docs/PLUGINS.md shows (icacls … /reset /T)"
+            )
         return f"could not check permissions of {path}: {exc}"
     return ""
 

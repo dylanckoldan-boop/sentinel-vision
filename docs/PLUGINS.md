@@ -58,28 +58,48 @@ it can't stop Sentinel Vision.
 ### Where plugins are loaded from
 
 * **Installed app on Windows:** only `C:\Program Files\Sentinel Vision\plugins\<name>\`, which only an administrator
-  can change. Install a plugin there from an administrator terminal, using a Python of the same version as the app
-  (3.12):
+  can change. Install a plugin there from an administrator PowerShell, using Python 3.12, the version the app is built
+  with (if `py -3.12` says no runtime matches, run `py install 3.12` first, or install 3.12 from python.org). Then reset
+  the permissions of what pip wrote:
 
   ```
   py -3.12 -m pip install --target "C:\Program Files\Sentinel Vision\plugins\my-plugin" my-plugin
+  icacls "C:\Program Files\Sentinel Vision\plugins\my-plugin" /setowner Administrators /T /C /Q
+  icacls "C:\Program Files\Sentinel Vision\plugins\my-plugin" /reset /T /C /Q
   ```
 
-  For Foldward, name a release tag, never the moving `main` branch, so what you install is what was reviewed and
-  released (Foldward 0.2.0 and newer work with the 0.5.2 contract and refusals; 0.2.1 fixes a canary flaw; 0.2.2 keeps
-  records it couldn't copy to its protected log, across restarts, and treats a full log as possible tampering):
+  The reset is needed because Python 3.12.4 and newer make pip's temporary files readable only by administrators,
+  and pip moves them into the plugin folder as they are. Sentinel Vision runs with your rights, so it can't read them
+  and refuses the plugin, saying it could not check its permissions (INT-N05). After the reset they take the
+  folder's normal permissions: you can read them, only administrators can change them.
+
+  For Foldward, install a release, never the moving `main` branch, so what you install is what was reviewed and
+  released. The checksum after `#sha256=` is the one in the release's `SHA256SUMS.txt`; pip refuses a file that
+  doesn't match, and this form doesn't need Git:
 
   ```
-  py -3.12 -m pip install --target "C:\Program Files\Sentinel Vision\plugins\foldward" "foldward @ git+https://github.com/dylanckoldan-boop/Foldward@v0.2.2"
+  py -3.12 -m pip install --target "C:\Program Files\Sentinel Vision\plugins\foldward" "foldward @ https://github.com/dylanckoldan-boop/foldward/releases/download/v0.2.2/foldward-0.2.2-py3-none-any.whl#sha256=b80ce6513163e89e5f93482efce06db43b83126fae8e51baa2f4a56044182f72"
+  icacls "C:\Program Files\Sentinel Vision\plugins\foldward" /setowner Administrators /T /C /Q
+  icacls "C:\Program Files\Sentinel Vision\plugins\foldward" /reset /T /C /Q
   ```
 
-  To upgrade it later, run the same command with `--upgrade` and the newer tag, then allow Foldward again when asked.
+  (With Git installed, `"foldward @ git+https://github.com/dylanckoldan-boop/Foldward@v0.2.2"` installs the same
+  release.) Foldward's pages need Sentinel Vision 0.5.4 or newer in the installed app: older builds leave out part of
+  the `cryptography` package that Foldward uses for its keys, so it was allowed but never appeared (INT-N04). Foldward
+  0.2.0 and newer work with the 0.5.2 contract and refusals; 0.2.1 fixes a canary flaw; 0.2.2 keeps records it
+  couldn't copy to its protected log, across restarts, and treats a full log as possible tampering.
+
+  Then `sentinel-vision-cli plugins`, run in a normal PowerShell, should list the plugin as waiting for approval.
+  Quit Sentinel Vision from its tray icon (closing the window only hides it), open it again and allow the plugin (see
+  Approval below). To upgrade later, run the same commands with `--upgrade` and the newer release's file and checksum,
+  then allow it again when asked.
 
   Before loading, Sentinel Vision checks every folder and file of the plugin. If anyone other than SYSTEM,
   Administrators or TrustedInstaller could change them, the plugin is refused, because otherwise a program running
-  with your rights could put code inside the antivirus. The installed app contains only the parts of Python it uses
-  itself, so a plugin's other dependencies must be installed into its folder too. Upgrading Sentinel Vision keeps
-  plugins; uninstalling removes them.
+  with your rights could put code inside the antivirus. A package the app already contains (`cryptography`, `psutil`
+  and PySide6's Qt modules) is always taken from the app, never from the plugin's folder; since 0.5.4 the app carries
+  `cryptography` whole, and the release checks it (`packaging/check_bundle.py`). Anything else a plugin needs must be
+  in its folder, which pip takes care of. Upgrading Sentinel Vision keeps plugins; uninstalling removes them.
 * **Run from Python (pip or source installs, any platform):** packages installed in the same Python environment.
 * **Installed macOS and Linux bundles, and the portable Windows build:** no plugins, because they have no folder
   that only an administrator can change.
@@ -91,7 +111,10 @@ it can't stop Sentinel Vision.
 A new plugin is never shown until you allow it. Sentinel Vision names the plugin and its folder and asks once. The
 approval is tied to a fingerprint of the plugin's files, so a changed plugin is asked about again. On Windows with the
 protection service, allowing a plugin counts as reducing protection (like adding an exclusion), so it needs
-administrator approval and no other program can allow one silently.
+administrator approval and no other program can allow one silently: after **Allow**, Windows asks for administrator
+permission, then Sentinel Vision shows exactly what will change ("Reduce Sentinel Vision protection?", where No is the
+default) and applies it only on **Yes**. Before 0.5.4 a "Protection change blocked" alert also appeared during this;
+it came from the app's own first try, not from another program (INT-N06).
 
 A plugin runs inside Sentinel Vision with the same rights. Only allow plugins you installed yourself.
 

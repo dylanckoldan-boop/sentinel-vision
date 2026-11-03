@@ -300,6 +300,7 @@ class Event:
     kind: str  # refused | changed | watchdog | system | warning
     detail: str
     seq: int = 0  # increases by one per event; clients ask for events after the last seq they saw
+    pid: int = 0  # for a refused request: the program that sent it (the app skips its own, INT-N06)
 
 
 @dataclass
@@ -438,10 +439,10 @@ class ServiceCore:
                 v.close()
             self._vaults.clear()
 
-    def _event(self, sid: str, kind: str, detail: str) -> None:
+    def _event(self, sid: str, kind: str, detail: str, pid: int = 0) -> None:
         with self._lock:
             self._event_seq += 1
-            ev = Event(time.time(), sid, kind, detail, self._event_seq)
+            ev = Event(time.time(), sid, kind, detail, self._event_seq, pid)
             self.events.append(ev)
             del self.events[:-500]
         try:
@@ -498,7 +499,9 @@ class ServiceCore:
         """Stop protection until the next sign-in (the app quits and is not restarted)."""
         sid, session = str(a.get("sid", c.sid)), int(a.get("session", c.session))
         if not c.elevated:
-            self._event(sid, "refused", "A program tried to stop Sentinel Vision without administrator approval")
+            self._event(
+                sid, "refused", "A program tried to stop Sentinel Vision without administrator approval", pid=c.pid
+            )
             raise ServiceError("elevation_required", "administrator approval is needed to stop protection")
         with self._lock:
             self.paused.add((sid, session))
@@ -532,7 +535,10 @@ class ServiceCore:
         if weaker and not c.elevated:
             names = ", ".join(label(w) for w in weaker)
             self._event(
-                sid, "refused", f"A change that weakens protection was refused (no administrator approval): {names}"
+                sid,
+                "refused",
+                f"A change that weakens protection was refused (no administrator approval): {names}",
+                pid=c.pid,
             )
             raise ServiceError(
                 "elevation_required", f"administrator approval is needed to change: {names}", fields=weaker

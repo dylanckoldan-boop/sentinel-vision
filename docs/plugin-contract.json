@@ -1,6 +1,6 @@
 {
   "about": "The command-line contract between sentinel-vision-cli and companion programs such as Foldward. docs/PLUGINS.md explains it in words; tests/test_plugin_contract.py checks the real tool against this file on every change. Companion programs keep a copy and replay the examples in their own tests. Additions keep plugin_api.API_VERSION; a change that breaks callers raises it. Every change gets a note in docs/PLUGINS.md.",
-  "sentinel_vision": "0.5.3",
+  "sentinel_vision": "0.5.4",
   "plugin_api_version": 1,
   "arguments": "Put -- before any file name or address, so it can never be read as an option.",
   "exit_codes": {
@@ -14,7 +14,7 @@
       "name": "version",
       "argv": ["--version"],
       "cases": [
-        {"case": "ok", "exit": 0, "stdout_pattern": "\\d+\\.\\d+\\.\\d+\\s*", "example": "0.5.3\n"}
+        {"case": "ok", "exit": 0, "stdout_pattern": "\\d+\\.\\d+\\.\\d+\\s*", "example": "0.5.4\n"}
       ]
     },
     {

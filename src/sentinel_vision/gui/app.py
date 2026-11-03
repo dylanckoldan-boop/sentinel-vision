@@ -253,8 +253,12 @@ class MainWindow(QMainWindow):
 
     def _service_events(self, events) -> None:
         self._service_task = None
+        own = os.getpid()
         for ev in events or []:
             if ev.get("kind") == "refused":
+                if ev.get("pid") == own:
+                    # this app's own first try: it is already asking for administrator approval (INT-N06)
+                    continue
                 self.sentinel.alert("Protection change blocked", ev.get("detail", ""), "danger")
             elif ev.get("kind") == "watchdog":
                 self.sentinel.alert("Sentinel Vision was restarted", ev.get("detail", ""), "warning")

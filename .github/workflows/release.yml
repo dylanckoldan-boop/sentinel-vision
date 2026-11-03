@@ -84,6 +84,8 @@ jobs:
           pyinstaller --noconfirm packaging/sentinel_vision.spec
           Copy-Item build\notices\THIRD_PARTY_NOTICES.txt dist\SentinelVision\
           Copy-Item LICENSE dist\SentinelVision\LICENSE.txt
+      - name: Check the app carries the packages plugins share with it (INT-N04)
+        run: python packaging/check_bundle.py dist\SentinelVision\SentinelVision.exe
       - name: Sign executables (optional)
         if: env.WINDOWS_CERT_PFX_BASE64 != ''
         shell: pwsh

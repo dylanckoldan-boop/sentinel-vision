@@ -209,3 +209,29 @@ def test_the_old_agent_guard_plugin_is_refused(tmp_path, monkeypatch):
 
     assert not old.loadable and "renamed Foldward" in old.problem
     assert new.loadable and new.name == "foldward"
+
+
+def test_files_pip_left_unreadable_are_refused_with_the_fix(monkeypatch, tmp_path):
+    """INT-N05: Python 3.12.4+ makes pip's moved files readable only by administrators; say how to fix it."""
+    import sys
+    import types
+
+    from sentinel_vision import plugins
+
+    class AccessDenied(Exception):
+        winerror = 5
+
+    def denied(*_a, **_k):
+        raise AccessDenied(5, "GetNamedSecurityInfo", "Access is denied.")
+
+    fake = types.SimpleNamespace(
+        GetNamedSecurityInfo=denied, SE_FILE_OBJECT=1, OWNER_SECURITY_INFORMATION=1, DACL_SECURITY_INFORMATION=4
+    )
+    monkeypatch.setitem(sys.modules, "win32security", fake)
+    monkeypatch.setattr(plugins.sys, "platform", "win32")
+    monkeypatch.setattr(plugins.os, "lstat", lambda p: types.SimpleNamespace(st_mode=0o100644, st_file_attributes=0))
+    problem = plugins.admin_only_problem(tmp_path / "_cffi_backend.cp312-win_amd64.pyd")
+    assert "could not check permissions" in problem and "icacls" in problem and "docs/PLUGINS.md" in problem
+    # any other failure still refuses the plugin, with the reason as it was
+    fake.GetNamedSecurityInfo = lambda *a, **k: (_ for _ in ()).throw(OSError("something else"))
+    assert plugins.admin_only_problem(tmp_path / "x").endswith("something else")
