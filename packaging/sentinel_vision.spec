@@ -23,6 +23,12 @@ NUMERIC = tuple(int(x) for x in re.findall(r"\d+", VERSION)[:3]) + (0,)
 
 datas = collect_data_files("sentinel_vision", includes=["rules/*.yar", "rules/*.yara"])
 hidden = collect_submodules("sentinel_vision") + collect_submodules("watchdog.observers")
+# Plugins run inside the app and get the packages it has already loaded from the app itself, so a copy in a
+# plugin's folder is never used. Bundle those whole, not only the parts the app imports: Foldward needs
+# cryptography's serialization package for its keys, which the app never imports (INT-N04).
+# packaging/check_bundle.py checks the built app for it.
+SHARED_WITH_PLUGINS = ["cryptography"]
+hidden += [m for pkg in SHARED_WITH_PLUGINS for m in collect_submodules(pkg)]
 # pywin32 modules are imported inside functions (Windows only), so PyInstaller can't see them on its own
 WIN_CLIENT = ["win32file", "win32pipe", "win32api", "win32security", "pywintypes"] if sys.platform == "win32" else []
 WIN_SERVICE = WIN_CLIENT + ["win32ts", "win32profile", "win32process", "win32con", "win32service",

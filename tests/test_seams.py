@@ -277,6 +277,27 @@ def test_service_warnings_are_shown_to_the_user():
     assert shown == [("Protected record log", "The protected record log 'foldward' is full.", "warning")]
 
 
+def test_the_apps_own_first_try_is_not_shown_as_a_blocked_change():
+    """INT-N06: allowing a plugin first tries without approval; that refusal is the app's own, not an attack."""
+    pytest.importorskip("PySide6")
+    import os
+    import types
+
+    from sentinel_vision.gui.app import MainWindow
+
+    shown = []
+    window = types.SimpleNamespace(
+        _service_task=object(), sentinel=types.SimpleNamespace(alert=lambda *a: shown.append(a))
+    )
+    detail = "A change that weakens protection was refused (no administrator approval): allowed plugins"
+    MainWindow._service_events(window, [{"kind": "refused", "detail": detail, "pid": os.getpid()}])
+    assert shown == []
+    # another program's attempt, or a service too old to say which program it was, is still shown
+    MainWindow._service_events(window, [{"kind": "refused", "detail": detail, "pid": 4242}])
+    MainWindow._service_events(window, [{"kind": "refused", "detail": detail}])
+    assert shown == [("Protection change blocked", detail, "danger")] * 2
+
+
 def test_plugin_log_refuses_to_fall_back_when_the_service_is_installed_but_down(monkeypatch):
     from sentinel_vision import plugin_api, service_client
 

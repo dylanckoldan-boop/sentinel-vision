@@ -3,6 +3,30 @@
 All notable changes to Sentinel Vision are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.4] - 2026-11-03
+
+Makes Foldward's pages load in the installed Windows app. Found on 3 November 2026 while installing Foldward 0.2.2 as
+a plugin on a Windows PC, the step the audits left to the owner (AG-C03). Needed by Foldward 0.2.0 and newer as a plugin;
+nothing changes for Foldward on its own or for the command-line contract.
+
+### Fixed
+- **Plugins get the whole `cryptography` package [INT-N04].** A plugin runs inside the app, and a package the app has
+  already loaded is always taken from the app, so the copy pip puts in the plugin's folder is never used. The app
+  bundled only the parts of `cryptography` it imports itself, which left out `serialization`; Foldward needs it for
+  its keys, so it was allowed but never appeared ("cannot import name 'serialization'" in the log). The app now
+  carries the whole package, and the Windows release checks the built app for it (`packaging/check_bundle.py`).
+- **No "Protection change blocked" alert for your own approvals [INT-N06].** Allowing a plugin, or any change that
+  needs administrator approval, first tries without it; the service refused that try and the app showed it as a danger
+  alert even when you then approved. The service now says which program a refusal was for, and the app leaves out its
+  own. Refusals of other programs are still shown.
+
+### Companion programs
+- `docs/PLUGINS.md`: after `pip install --target`, reset the plugin folder's permissions with `icacls`, because Python
+  3.12.4 and newer leave pip's files readable only by administrators and the app refuses a plugin it can't check
+  [INT-N05]; install Foldward from its release file with a pinned checksum (no Git needed); `py install 3.12` when
+  Python 3.12 is missing; quit from the tray icon, then allow the plugin and answer **Yes** to "Reduce Sentinel Vision
+  protection?". `sentinel-vision-cli plugins` now says how to fix that refusal.
+
 ## [0.5.3] - 2026-11-01
 
 Closes Sentinel Vision's side of integration finding INT-N01 from the 1 November 2026 review. Released together with

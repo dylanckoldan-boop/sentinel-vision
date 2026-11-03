@@ -72,6 +72,8 @@ def test_weakening_needs_admin_and_is_recorded(core):
     assert core.policy(ALICE.sid)["realtime_enabled"] is True  # unchanged
     events = core.handle(ALICE, "events", {})[0]["events"]
     assert any(ev["kind"] == "refused" for ev in events)
+    # the refusal names the program that asked, so the app can leave out its own first try (INT-N06)
+    assert [ev["pid"] for ev in events if ev["kind"] == "refused"] == [ALICE.pid]
     # with the administrator prompt approved it is accepted
     core.handle(ALICE_ADMIN, "policy.set", {"policy": pol})
     assert core.policy(ALICE.sid)["realtime_enabled"] is False
